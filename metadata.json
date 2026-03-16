@@ -1,0 +1,5 @@
+{
+  "name": "Student Marks Sheet Pro",
+  "description": "Professional student performance tracker with automated grading, pass/fail logic, and PDF export capabilities.",
+  "requestFramePermissions": []
+}
