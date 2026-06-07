@@ -1,0 +1,96 @@
+{
+  "entities": {
+    "Student": {
+      "title": "Student",
+      "description": "A student record with marks",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Student ID" },
+        "name": { "type": "string", "description": "Student full name" },
+        "class": { "type": "string", "description": "Student class" },
+        "section": { "type": "string", "description": "Student section" },
+        "examType": { "type": "string", "description": "Type of exam (e.g. Midterm, Final)" },
+        "marks": { "type": "object", "description": "Subject-wise marks" },
+        "image": { "type": "string", "description": "Base64 encoded image" },
+        "docId": { "type": "string", "description": "Unique document ID" }
+      },
+      "required": ["id", "name", "class", "marks"]
+    },
+    "Subject": {
+      "title": "Subject",
+      "description": "A subject configuration",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Subject ID" },
+        "name": { "type": "string", "description": "Subject name" },
+        "maxMarks": { "type": "number", "description": "Maximum marks" },
+        "passMarks": { "type": "number", "description": "Passing marks" },
+        "type": { "type": "string", "description": "Subject type (Theory, Practical, etc.)" },
+        "examDate": { "type": "string", "description": "Date of exam" },
+        "examTime": { "type": "string", "description": "Time of exam" },
+        "room": { "type": "string", "description": "Exam room/hall" }
+      },
+      "required": ["id", "name", "maxMarks", "passMarks"]
+    },
+    "Settings": {
+      "title": "Settings",
+      "description": "Application settings including admin details",
+      "type": "object",
+      "properties": {
+        "adminPassword": { "type": "string", "description": "Shared admin password" },
+        "examCenter": { "type": "string", "description": "Name of the exam center" },
+        "subjectTypes": { "type": "array", "description": "List of available subject types" }
+      },
+      "required": ["adminPassword"]
+    },
+    "Attendance": {
+      "title": "Attendance",
+      "description": "A student's attendance record for a specific date",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique record ID (studentId_date)" },
+        "studentId": { "type": "string", "description": "Student ID" },
+        "studentName": { "type": "string", "description": "Student name for display" },
+        "class": { "type": "string", "description": "Student class" },
+        "date": { "type": "string", "description": "Date in YYYY-MM-DD format" },
+        "status": { "type": "string", "enum": ["Present", "Absent", "Late"], "description": "Attendance status" }
+      },
+      "required": ["id", "studentId", "class", "date", "status"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "An exam announcement or notification",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Notification ID" },
+        "title": { "type": "string", "description": "Notification title" },
+        "content": { "type": "string", "description": "Notification content" },
+        "date": { "type": "string", "description": "Notification date" },
+        "important": { "type": "boolean", "description": "Is this notification urgent" }
+      },
+      "required": ["id", "title", "content", "date"]
+    }
+  },
+  "firestore": {
+    "/students/{studentId}": {
+      "schema": "Student",
+      "description": "Collection of student records"
+    },
+    "/subjects/{subjectId}": {
+      "schema": "Subject",
+      "description": "Collection of subject configurations"
+    },
+    "/settings/{settingId}": {
+      "schema": "Settings",
+      "description": "Global application settings"
+    },
+    "/attendance/{attendanceId}": {
+      "schema": "Attendance",
+      "description": "Collection of attendance records"
+    },
+    "/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "Collection of exam notifications"
+    }
+  }
+}
