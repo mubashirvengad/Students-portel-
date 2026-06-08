@@ -6,8 +6,10 @@ export interface SubjectConfig {
   type?: 'Theory' | 'Practical' | 'Internal' | 'Other';
   examDate?: string;
   examTime?: string;
+  classTime?: string; // e.g. "09:00 AM - 10:00 AM" for lectures
   room?: string;
   class?: string;
+  day?: string; // e.g. "Monday", "Tuesday"
 }
 
 export interface StudentMarks {

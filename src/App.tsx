@@ -10,16 +10,22 @@ import {
   Tooltip as RechartsTooltip, 
   Legend
 } from 'recharts';
-import { Plus, Trash2, Download, GraduationCap, UserPlus, Calculator, FileText, LogIn, LogOut, User, Award, CheckCircle2, XCircle, Settings, BookOpen, Image as ImageIcon, AlertTriangle, ShieldCheck, Search, Pencil, X, Calendar, Check, Clock, Users, TrendingUp, CheckSquare, Square, Ticket, Sparkles, Sliders, Bell, Megaphone } from 'lucide-react';
+import { Plus, PlusCircle, Trash2, Download, GraduationCap, UserPlus, Calculator, FileText, LogIn, LogOut, User, Award, CheckCircle2, XCircle, Settings, BookOpen, Image as ImageIcon, AlertTriangle, ShieldCheck, Search, Pencil, X, Calendar, Check, Clock, Users, TrendingUp, CheckSquare, Square, Ticket, Sparkles, Sliders, Bell, Megaphone, Database, Copy, ExternalLink, RefreshCw } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { StudentMarks, CalculatedMarks, SubjectConfig, ExamNotification } from './types';
 import { PhotoAdjusterModal } from './components/PhotoAdjusterModal';
-import { onSnapshot, collection, doc, setDoc, deleteDoc, updateDoc, getDocFromServer, query, where } from 'firebase/firestore';
-import { onAuthStateChanged, User as FirebaseUser, signInAnonymously, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
-import { db, auth, logout } from './firebase';
+import { 
+  checkSupabaseConnection, 
+  fetchFromSupabase, 
+  upsertToSupabase, 
+  deleteFromSupabase, 
+  SUPABASE_SQL_SETUP, 
+  SUPABASE_URL, 
+  SUPABASE_KEY 
+} from './supabase';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -38,48 +44,18 @@ interface FirestoreErrorInfo {
   error: string;
   operationType: OperationType;
   path: string | null;
-  authInfo: {
-    userId: string | undefined;
-    email: string | null | undefined;
-    emailVerified: boolean | undefined;
-    isAnonymous: boolean | undefined;
-    tenantId: string | null | undefined;
-    providerInfo: {
-      providerId: string;
-      displayName: string | null;
-      email: string | null;
-      photoUrl: string | null;
-    }[];
-  }
 }
 
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData.map(provider => ({
-        providerId: provider.providerId,
-        displayName: provider.displayName,
-        email: provider.email,
-        photoUrl: provider.photoURL
-      })) || []
-    },
-    operationType,
-    path
-  }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  toast.error(`Database Error: ${errInfo.error}`);
-  throw new Error(JSON.stringify(errInfo));
+  const errMessage = error instanceof Error ? error.message : String(error);
+  console.error('Database Error: ', errMessage, 'Op:', operationType, 'Path:', path);
+  toast.error(`Database Error: ${errMessage}`);
 }
 
 const FIXED_CLASSES = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '+1', '+2', 'Degree', 'PG'];
 const FIXED_SECTIONS = ['A', 'B', 'C', 'D'];
 const FIXED_EXAMS = ['Monthly Test', 'Midterm Exam', 'Final Exam', 'Unit Test 1', 'Unit Test 2'];
+const FIXED_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
 interface AttendanceRecord {
   id: string;
@@ -96,16 +72,64 @@ export default function App() {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [adminLoginInput, setAdminLoginInput] = useState('');
   const [adminLoginError, setAdminLoginError] = useState('');
-  const [adminPassword, setAdminPassword] = useState('1234');
-  const [examCenter, setExamCenter] = useState('MANSHAU CAMPUS MAIN CENTER');
-  const [subjectTypes, setSubjectTypes] = useState<string[]>(['Theory', 'Practical', 'Internal', 'Other']);
+  const [adminPassword, setAdminPassword] = useState<string>(() => {
+    return localStorage.getItem('adminPassword') || '1234';
+  });
+  const [examCenter, setExamCenter] = useState<string>(() => {
+    return localStorage.getItem('examCenter') || 'MANSHAU CAMPUS MAIN CENTER';
+  });
+  const [subjectTypes, setSubjectTypes] = useState<string[]>(() => {
+    const local = localStorage.getItem('subjectTypes');
+    return local ? JSON.parse(local) : ['Theory', 'Practical', 'Internal', 'Other'];
+  });
   const [newPasswordInput, setNewPasswordInput] = useState('');
   const [isChangingPassword, setIsChangingPassword] = useState(false);
 
-  const [subjects, setSubjects] = useState<SubjectConfig[]>([]);
-  const [students, setStudents] = useState<StudentMarks[]>([]);
-  const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
-  const [notifications, setNotifications] = useState<ExamNotification[]>([]);
+  const [subjects, setSubjects] = useState<SubjectConfig[]>(() => {
+    const local = localStorage.getItem('subjects');
+    if (local) {
+      try {
+        return JSON.parse(local);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    return [
+      { id: '1', name: 'English', maxMarks: 100, passMarks: 35, type: 'Theory', day: 'Monday', classTime: '09:00 AM - 10:00 AM', examTime: '09:00 AM', room: '101' },
+      { id: '2', name: 'Maths', maxMarks: 100, passMarks: 35, type: 'Theory', day: 'Tuesday', classTime: '10:00 AM - 11:00 AM', examTime: '10:30 AM', room: '102' },
+      { id: '3', name: 'Science', maxMarks: 100, passMarks: 35, type: 'Theory', day: 'Wednesday', classTime: '11:15 AM - 12:15 PM', examTime: '01:00 PM', room: '103' },
+      { id: '4', name: 'Social', maxMarks: 100, passMarks: 35, type: 'Theory', day: 'Thursday', classTime: '12:15 PM - 01:15 PM', examTime: '02:30 PM', room: '104' },
+      { id: '5', name: 'Computer', maxMarks: 100, passMarks: 35, type: 'Theory', day: 'Friday', classTime: '02:00 PM - 03:00 PM', examTime: '04:00 PM', room: 'Lab 1' },
+    ];
+  });
+  const [students, setStudents] = useState<StudentMarks[]>(() => {
+    const local = localStorage.getItem('students');
+    return local ? JSON.parse(local) : [];
+  });
+  const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>(() => {
+    const local = localStorage.getItem('attendance');
+    return local ? JSON.parse(local) : [];
+  });
+  const [notifications, setNotifications] = useState<ExamNotification[]>(() => {
+    const local = localStorage.getItem('notifications');
+    if (local) {
+      try {
+        return JSON.parse(local);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    return [
+      {
+        id: 'notif-1',
+        title: 'Welcome to Exam Student Portal',
+        content: 'All upcoming midterm schedule records and hall ticket release status updates will be published here.',
+        date: '2026-06-04',
+        important: true,
+        audience: 'all'
+      }
+    ];
+  });
   const [newNotifTitle, setNewNotifTitle] = useState('');
   const [newNotifContent, setNewNotifContent] = useState('');
   const [newNotifImportant, setNewNotifImportant] = useState(false);
@@ -137,9 +161,10 @@ export default function App() {
   const [editingStudent, setEditingStudent] = useState<StudentMarks | null>(null);
   const [isAddingStudent, setIsAddingStudent] = useState(false);
   const [isUpdatingStudent, setIsUpdatingStudent] = useState(false);
-  const [studentPortalTab, setStudentPortalTab] = useState<'marks' | 'attendance' | 'hall-ticket' | 'notifications'>('marks');
+  const [studentPortalTab, setStudentPortalTab] = useState<'marks' | 'attendance' | 'hall-ticket' | 'notifications' | 'timetable'>('marks');
   const [portalNotifFilter, setPortalNotifFilter] = useState<'all' | 'mine' | 'students' | 'parents'>('mine');
-  const [adminTab, setAdminTab] = useState<'results' | 'students' | 'subjects' | 'settings' | 'hall-tickets' | 'notifications'>('results');
+  const [adminTab, setAdminTab] = useState<'results' | 'students' | 'subjects' | 'settings' | 'hall-tickets' | 'notifications' | 'timetable'>('results');
+  const [adminTimetableClassFilter, setAdminTimetableClassFilter] = useState('All');
   const [attendanceSearch, setAttendanceSearch] = useState('');
   const [showClearAllModal, setShowClearAllModal] = useState(false);
   const [isClearingAll, setIsClearingAll] = useState(false);
@@ -169,238 +194,285 @@ export default function App() {
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
   const [showSubjectConfigPanel, setShowSubjectConfigPanel] = useState(false);
 
-  const [isAuthReady, setIsAuthReady] = useState(false);
-
-  // Database Connection states
-  const [dbProvider, setDbProvider] = useState<'firebase' | 'mongodb'>(() => {
-    return (localStorage.getItem('dbProvider') as 'firebase' | 'mongodb') || 'firebase';
-  });
-  const [dbStatus, setDbStatus] = useState<{
-    isConfigured: boolean;
+  // Supabase Sync States
+  const [supabaseStatus, setSupabaseStatus] = useState<{
     isConnected: boolean;
+    checkedAt: string;
     error: string | null;
-    uri: string | null;
-    provider: string;
+    tablesVerified: {
+      students: boolean;
+      subjects: boolean;
+      attendance: boolean;
+      notifications: boolean;
+      settings: boolean;
+    };
   } | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
 
-  const fetchDbStatus = async () => {
+  const syncFromSupabase = async (showSuccessToast = false) => {
+    setIsSyncing(true);
     try {
-      const resp = await fetch('/api/db-status');
-      if (resp.ok) {
-        const data = await resp.json();
-        setDbStatus(data);
+      const conn = await checkSupabaseConnection();
+      setSupabaseStatus(conn);
+
+      if (!conn.isConnected) {
+        console.warn("Supabase is offline or tables not initialized. Falling back safely to Local Offline DB.");
+        if (showSuccessToast) {
+          toast.error("Could not sync with Supabase tables. Please make sure the SQL setup is executed in the Supabase Dashboard!");
+        }
+        return;
       }
-    } catch (err) {
-      console.error('Failed to load DB status:', err);
+
+      // Sync and loader helper
+      const loadTable = async (table: string, setter: (val: any) => void, localKey: string) => {
+        try {
+          const remoteRows = await fetchFromSupabase<any>(table);
+          if (remoteRows && Array.isArray(remoteRows)) {
+            if (table === 'settings') {
+              const adminConf = remoteRows.find(s => s.id === 'admin');
+              if (adminConf) {
+                if (adminConf.adminPassword !== undefined) {
+                  setAdminPassword(adminConf.adminPassword);
+                  localStorage.setItem('adminPassword', adminConf.adminPassword);
+                }
+                if (adminConf.examCenter !== undefined) {
+                  setExamCenter(adminConf.examCenter);
+                  localStorage.setItem('examCenter', adminConf.examCenter);
+                }
+                if (adminConf.subjectTypes !== undefined) {
+                  setSubjectTypes(adminConf.subjectTypes);
+                  localStorage.setItem('subjectTypes', JSON.stringify(adminConf.subjectTypes));
+                }
+              }
+            } else {
+              // Convert fields appropriately if needed
+              setter(remoteRows);
+              localStorage.setItem(localKey, JSON.stringify(remoteRows));
+            }
+          }
+        } catch (e: any) {
+          console.error(`Error loading table ${table} from Supabase during sync:`, e.message || e);
+        }
+      };
+
+      if (conn.tablesVerified.students) {
+        await loadTable('students', setStudents, 'students');
+      }
+      if (conn.tablesVerified.subjects) {
+        await loadTable('subjects', setSubjects, 'subjects');
+      }
+      if (conn.tablesVerified.attendance) {
+        await loadTable('attendance', setAttendanceRecords, 'attendance');
+      }
+      if (conn.tablesVerified.notifications) {
+        await loadTable('notifications', setNotifications, 'notifications');
+      }
+      if (conn.tablesVerified.settings) {
+        await loadTable('settings', () => {}, 'settings');
+      }
+
+      if (showSuccessToast) {
+        toast.success("Synchronized data with Supabase successfully!");
+      }
+    } catch (err: any) {
+      console.error("Supabase general sync error:", err);
+      if (showSuccessToast) {
+        toast.error(`Sync error: ${err.message || err}`);
+      }
+    } finally {
+      setIsSyncing(false);
     }
   };
 
-  const fetchAllMongoDBData = async () => {
+  // Perform initial load-sync on mount
+  useEffect(() => {
+    syncFromSupabase(false);
+  }, []);
+
+  // Hybrid Local DB + Supabase-backed Persistence Helpers
+  const dbSave = async (collectionName: string, id: string, data: any, merge = false) => {
     try {
-      const response = await fetch('/api/data');
-      if (!response.ok) throw new Error('Failed to fetch MongoDB database data');
-      const resData = await response.json();
-      if (resData.success) {
-        if (resData.students) setStudents(resData.students);
-        if (resData.subjects) setSubjects(resData.subjects);
-        if (resData.attendance) setAttendanceRecords(resData.attendance);
-        if (resData.notifications) setNotifications(resData.notifications);
-        if (resData.settings) {
-          setAdminPassword(resData.settings.adminPassword || '1234');
-          setExamCenter(resData.settings.examCenter || 'MANSHAU CAMPUS MAIN CENTER');
-          if (resData.settings.subjectTypes) setSubjectTypes(resData.settings.subjectTypes);
+      // 1. Instantly write to LocalStorage & update React memory state
+      if (collectionName === 'students') {
+        setStudents(prev => {
+          const index = prev.findIndex(s => s.id === id || s.docId === id);
+          let updated;
+          if (index > -1) {
+            updated = prev.map((s, idx) => idx === index ? (merge ? { ...s, ...data } : data) : s);
+          } else {
+            updated = [...prev, data];
+          }
+          localStorage.setItem('students', JSON.stringify(updated));
+          return updated;
+        });
+      } else if (collectionName === 'subjects') {
+        setSubjects(prev => {
+          const index = prev.findIndex(s => s.id === id);
+          let updated;
+          if (index > -1) {
+            updated = prev.map((s, idx) => idx === index ? (merge ? { ...s, ...data } : data) : s);
+          } else {
+            updated = [...prev, data];
+          }
+          localStorage.setItem('subjects', JSON.stringify(updated));
+          return updated;
+        });
+      } else if (collectionName === 'attendance') {
+        setAttendanceRecords(prev => {
+          const index = prev.findIndex(a => a.id === id);
+          let updated;
+          if (index > -1) {
+            updated = prev.map((a, idx) => idx === index ? (merge ? { ...a, ...data } : data) : a);
+          } else {
+            updated = [...prev, data];
+          }
+          localStorage.setItem('attendance', JSON.stringify(updated));
+          return updated;
+        });
+      } else if (collectionName === 'notifications') {
+        setNotifications(prev => {
+          const index = prev.findIndex(n => n.id === id);
+          let updated;
+          if (index > -1) {
+            updated = prev.map((n, idx) => idx === index ? (merge ? { ...n, ...data } : data) : n);
+          } else {
+            updated = [...prev, data];
+          }
+          localStorage.setItem('notifications', JSON.stringify(updated));
+          return updated;
+        });
+      } else if (collectionName === 'settings') {
+        if (data.adminPassword !== undefined) {
+          setAdminPassword(data.adminPassword);
+          localStorage.setItem('adminPassword', data.adminPassword);
+        }
+        if (data.examCenter !== undefined) {
+          setExamCenter(data.examCenter);
+          localStorage.setItem('examCenter', data.examCenter);
+        }
+        if (data.subjectTypes !== undefined) {
+          setSubjectTypes(data.subjectTypes);
+          localStorage.setItem('subjectTypes', JSON.stringify(data.subjectTypes));
         }
       }
-    } catch (err) {
-      console.error('Error fetching MongoDB data:', err);
-    }
-  };
 
-  useEffect(() => {
-    fetchDbStatus();
-  }, [dbProvider]);
-
-  useEffect(() => {
-    if (dbProvider === 'mongodb') {
-      fetchAllMongoDBData();
-      const interval = setInterval(fetchAllMongoDBData, 5000);
-      return () => clearInterval(interval);
-    }
-  }, [dbProvider]);
-
-  // Unified Database Persistence Helpers to abstract Firebase / MongoDB
-  const dbSave = async (collectionName: string, id: string, data: any, merge = false) => {
-    if (dbProvider === 'firebase') {
-      if (merge) {
-        await setDoc(doc(db, collectionName, id), data, { merge: true });
-      } else {
-        await setDoc(doc(db, collectionName, id), data);
+      // 2. Perform optimistic/background write to Supabase
+      let payload = data;
+      if (collectionName === 'settings') {
+        payload = {
+          id: 'admin',
+          adminPassword: data.adminPassword !== undefined ? data.adminPassword : adminPassword,
+          examCenter: data.examCenter !== undefined ? data.examCenter : examCenter,
+          subjectTypes: data.subjectTypes !== undefined ? data.subjectTypes : subjectTypes
+        };
+      } else if (collectionName === 'students') {
+        payload = {
+          docId: id,
+          id: data.id || id,
+          studentId: data.studentId || null,
+          name: data.name || '',
+          class: data.class || '',
+          section: data.section || null,
+          examType: data.examType || null,
+          marks: data.marks || {},
+          image: data.image || null,
+          hallTicketAvailable: data.hallTicketAvailable !== undefined ? data.hallTicketAvailable : false
+        };
+      } else if (collectionName === 'subjects') {
+        payload = {
+          id,
+          name: data.name || '',
+          maxMarks: data.maxMarks !== undefined ? Number(data.maxMarks) : 100,
+          passMarks: data.passMarks !== undefined ? Number(data.passMarks) : 35,
+          type: data.type || null,
+          examDate: data.examDate || null,
+          examTime: data.examTime || null,
+          room: data.room || null,
+          class: data.class || null,
+          day: data.day || 'Monday',
+          classTime: data.classTime || null
+        };
+      } else if (collectionName === 'notifications') {
+        payload = {
+          id,
+          title: data.title || '',
+          content: data.content || '',
+          date: data.date || '',
+          important: data.important !== undefined ? data.important : false,
+          audience: data.audience || 'all'
+        };
+      } else if (collectionName === 'attendance') {
+        payload = {
+          id,
+          studentId: data.studentId || '',
+          studentName: data.studentName || '',
+          studentClass: data.studentClass || '',
+          date: data.date || '',
+          status: data.status || ''
+        };
       }
-    } else {
-      const response = await fetch('/api/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collectionName, id, data })
-      });
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(errText || `MongoDB failed to save to ${collectionName}`);
-      }
-      await fetchAllMongoDBData();
+
+      // Spawn background upload
+      upsertToSupabase(collectionName, collectionName === 'students' ? 'docId' : 'id', payload)
+        .then(() => {
+          console.log(`[Supabase Background Sync] Success for ${collectionName}: ${id}`);
+        })
+        .catch(err => {
+          console.warn(`[Supabase Background Sync] Skipped/Offline for ${collectionName}:`, err.message || err);
+        });
+
+    } catch (error) {
+      console.error('Error saving data to local storage:', error);
+      toast.error('Local Storage Save Error');
     }
   };
 
   const dbUpdate = async (collectionName: string, id: string, data: any) => {
-    if (dbProvider === 'firebase') {
-      await updateDoc(doc(db, collectionName, id), data);
-    } else {
-      // In server.ts, POST /api/save updates/upserts which matches merge update
-      const response = await fetch('/api/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collectionName, id, data })
-      });
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(errText || `MongoDB failed to update ${collectionName}`);
-      }
-      await fetchAllMongoDBData();
-    }
+    await dbSave(collectionName, id, data, true);
   };
 
   const dbDelete = async (collectionName: string, id: string) => {
-    if (dbProvider === 'firebase') {
-      await deleteDoc(doc(db, collectionName, id));
-    } else {
-      const response = await fetch('/api/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collectionName, id })
-      });
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(errText || `MongoDB failed to delete from ${collectionName}`);
-      }
-      await fetchAllMongoDBData();
-    }
-  };
-
-  // Sync Auth State
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        // If user is logged in, check if they are the admin
-        if (user.email === 'muhammadmubashir51661@gmail.com') {
-          setIsAdminLoggedIn(true);
-        } else {
-          setIsAdminLoggedIn(false);
-        }
-      } else {
-        setIsAdminLoggedIn(false);
-      }
-      setIsAuthReady(true);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // Sync Settings (Admin Password & Center info)
-  useEffect(() => {
-    if (!isAuthReady || dbProvider !== 'firebase') return;
-    const path = 'settings/admin';
-    const unsubscribe = onSnapshot(doc(db, 'settings', 'admin'), async (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.data();
-        setAdminPassword(data.adminPassword || '1234');
-        setExamCenter(data.examCenter || 'MANSHAU CAMPUS MAIN CENTER');
-        setSubjectTypes(data.subjectTypes || ['Theory', 'Practical', 'Internal', 'Other']);
-      } else {
-        // Seed default settings if not exists
-        await setDoc(doc(db, 'settings', 'admin'), { 
-          adminPassword: '1234',
-          examCenter: 'MANSHAU CAMPUS MAIN CENTER',
-          subjectTypes: ['Theory', 'Practical', 'Internal', 'Other']
+    try {
+      if (collectionName === 'students') {
+        setStudents(prev => {
+          const updated = prev.filter(s => s.id !== id && s.docId !== id);
+          localStorage.setItem('students', JSON.stringify(updated));
+          return updated;
+        });
+      } else if (collectionName === 'subjects') {
+        setSubjects(prev => {
+          const updated = prev.filter(s => s.id !== id);
+          localStorage.setItem('subjects', JSON.stringify(updated));
+          return updated;
+        });
+      } else if (collectionName === 'attendance') {
+        setAttendanceRecords(prev => {
+          const updated = prev.filter(a => a.id !== id);
+          localStorage.setItem('attendance', JSON.stringify(updated));
+          return updated;
+        });
+      } else if (collectionName === 'notifications') {
+        setNotifications(prev => {
+          const updated = prev.filter(n => n.id !== id);
+          localStorage.setItem('notifications', JSON.stringify(updated));
+          return updated;
         });
       }
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, path);
-    });
-    return () => unsubscribe();
-  }, [isAuthReady, dbProvider]);
 
-  // Sync Subjects from Firestore
-  useEffect(() => {
-    if (!isAuthReady || dbProvider !== 'firebase') return;
-    const path = 'subjects';
-    const unsubscribe = onSnapshot(collection(db, path), async (snapshot) => {
-      if (snapshot.empty && isAdminLoggedIn) {
-        // Seed default subjects if empty and user is admin
-        const DEFAULT_SUBJECTS: SubjectConfig[] = [
-          { id: '1', name: 'English', maxMarks: 100, passMarks: 35, type: 'Theory' },
-          { id: '2', name: 'Maths', maxMarks: 100, passMarks: 35, type: 'Theory' },
-          { id: '3', name: 'Science', maxMarks: 100, passMarks: 35, type: 'Theory' },
-          { id: '4', name: 'Social', maxMarks: 100, passMarks: 35, type: 'Theory' },
-          { id: '5', name: 'Computer', maxMarks: 100, passMarks: 35, type: 'Theory' },
-        ];
-        for (const sub of DEFAULT_SUBJECTS) {
-          await setDoc(doc(db, 'subjects', sub.id), sub);
-        }
-      }
-      const subs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as SubjectConfig));
-      setSubjects(subs.length > 0 ? subs : []);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
-    });
-    return () => unsubscribe();
-  }, [isAuthReady, isAdminLoggedIn, dbProvider]);
+      // Synchronize deletion in background
+      deleteFromSupabase(collectionName, collectionName === 'students' ? 'docId' : 'id', id)
+        .then(() => {
+          console.log(`[Supabase Background Sync] Delete Success for ${collectionName}: ${id}`);
+        })
+        .catch(err => {
+          console.warn(`[Supabase Background Sync] Delete Skipped/Offline for ${collectionName}:`, err.message || err);
+        });
 
-  // Sync Students from Firestore
-  useEffect(() => {
-    if (!isAuthReady || dbProvider !== 'firebase') return;
-    const path = 'students';
-    const unsubscribe = onSnapshot(collection(db, path), (snapshot) => {
-      const studs = snapshot.docs.map(doc => ({ ...doc.data(), docId: doc.id } as StudentMarks));
-      setStudents(studs);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
-    });
-    return () => unsubscribe();
-  }, [isAuthReady, dbProvider]);
-
-  // Sync Attendance from Firestore
-  useEffect(() => {
-    if (!isAuthReady || dbProvider !== 'firebase') return;
-    const path = 'attendance';
-    const unsubscribe = onSnapshot(collection(db, path), (snapshot) => {
-      const records = snapshot.docs.map(doc => ({ ...doc.data() } as AttendanceRecord));
-      setAttendanceRecords(records);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
-    });
-    return () => unsubscribe();
-  }, [isAuthReady, dbProvider]);
-
-  // Sync Notifications from Firestore
-  useEffect(() => {
-    if (!isAuthReady || dbProvider !== 'firebase') return;
-    const path = 'notifications';
-    const unsubscribe = onSnapshot(collection(db, path), (snapshot) => {
-      if (snapshot.empty && isAdminLoggedIn) {
-        const defaultNotif: ExamNotification = {
-          id: 'notif-1',
-          title: 'Welcome to Exam Student Portal',
-          content: 'All upcoming midterm schedule records and hall ticket release status updates will be published here.',
-          date: '2026-06-04',
-          important: true
-        };
-        setDoc(doc(db, 'notifications', defaultNotif.id), defaultNotif).catch(e => console.error(e));
-      }
-      const records = snapshot.docs.map(doc => ({ ...doc.data() } as ExamNotification));
-      setNotifications(records);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, path);
-    });
-    return () => unsubscribe();
-  }, [isAuthReady, isAdminLoggedIn, dbProvider]);
+    } catch (error) {
+      console.error('Error deleting data from local storage:', error);
+      toast.error('Local Storage Delete Error');
+    }
+  };
 
   const markAttendance = async (studentId: string, studentName: string, studentClass: string, status: AttendanceRecord['status']) => {
     const id = `${studentId}_${attendanceDate}`;
@@ -425,20 +497,6 @@ export default function App() {
     return record?.status;
   };
 
-  // Test Connection
-  useEffect(() => {
-    async function testConnection() {
-      try {
-        await getDocFromServer(doc(db, 'test', 'connection'));
-      } catch (error) {
-        if(error instanceof Error && error.message.includes('the client is offline')) {
-          console.error("Please check your Firebase configuration. ");
-        }
-      }
-    }
-    testConnection();
-  }, []);
-
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     handlePhotoFileChange(e, (adjusted) => {
       setNewStudent(prev => ({ ...prev, image: adjusted }));
@@ -453,9 +511,11 @@ export default function App() {
   const [newSubjectType, setNewSubjectType] = useState('Theory');
   const [newSubjectDate, setNewSubjectDate] = useState('');
   const [newSubjectTime, setNewSubjectTime] = useState('');
+  const [newSubjectDay, setNewSubjectDay] = useState('Monday');
   const [newSubjectRoom, setNewSubjectRoom] = useState('');
   const [newSubjectClass, setNewSubjectClass] = useState('All');
   const [newTypeInput, setNewTypeInput] = useState('');
+  const [showAddTimeTableForm, setShowAddTimeTableForm] = useState(false);
 
   const calculateGrade = (percentage: number): string => {
     if (percentage >= 90) return 'A+';
@@ -885,10 +945,10 @@ export default function App() {
       maxMarks: newSubjectMax,
       passMarks: newSubjectPass,
       type: newSubjectType as any,
-      examDate: newSubjectDate,
-      examTime: newSubjectTime,
+      classTime: newSubjectTime,
       room: newSubjectRoom,
       class: newSubjectClass,
+      day: newSubjectDay,
     };
     const path = `subjects/${id}`;
     try {
@@ -896,8 +956,10 @@ export default function App() {
       setNewSubjectName('');
       setNewSubjectMax(100);
       setNewSubjectPass(35);
+      setNewSubjectType('Theory');
       setNewSubjectDate('');
       setNewSubjectTime('');
+      setNewSubjectDay('Monday');
       setNewSubjectRoom('');
       setNewSubjectClass('All');
     } catch (error) {
@@ -994,25 +1056,10 @@ export default function App() {
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (adminLoginInput === adminPassword) {
-      try {
-        await signInAnonymously(auth);
-        setIsAdminLoggedIn(true);
-        setAdminLoginError('');
-        setAdminLoginInput('');
-        toast.success("Admin Session Started");
-      } catch (error: any) {
-        // Silently handle restricted operation - it just means DB writes won't sync to cloud
-        // but the app should still function for local UI
-        setIsAdminLoggedIn(true);
-        setAdminLoginError('');
-        setAdminLoginInput('');
-        
-        if (error.code === 'auth/admin-restricted-operation') {
-          console.warn("Firebase Anonymous Auth is disabled. Updates will not persist to cloud.");
-        } else {
-          console.error("Auth Error:", error);
-        }
-      }
+      setIsAdminLoggedIn(true);
+      setAdminLoginError('');
+      setAdminLoginInput('');
+      toast.success("Admin Session Started");
     } else {
       setAdminLoginError('Incorrect password.');
     }
@@ -1098,6 +1145,103 @@ export default function App() {
     setLoginId('');
     setLoginName('');
     setView('landing');
+  };
+
+  const exportTimeTable = (studentData: CalculatedMarks) => {
+    const doc = new jsPDF('landscape');
+    
+    // Draw header
+    doc.setFillColor(20, 20, 20);
+    doc.rect(0, 0, 297, 45, 'F');
+    
+    doc.setDrawColor(255, 255, 255);
+    doc.setLineWidth(1);
+    doc.line(14, 10, 14, 35);
+    doc.line(14, 10, 25, 10);
+    doc.line(14, 22.5, 20, 22.5);
+    
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(26);
+    doc.text('MANSHAU', 30, 24);
+    
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    doc.setTextColor(180, 180, 180);
+    doc.text('CAMPUS ACADEMIC SYSTEM', 30, 32);
+    
+    doc.setFontSize(14);
+    doc.setTextColor(255, 255, 255);
+    doc.text('CLASS TIME TABLE', 283, 25, { align: 'right' });
+
+    // Student Info
+    doc.setFillColor(250, 250, 250);
+    doc.setDrawColor(230, 230, 230);
+    doc.roundedRect(14, 55, 269, 25, 2, 2, 'FD');
+
+    doc.setTextColor(40, 40, 40);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.text((studentData.name || '').toUpperCase(), 20, 68);
+    
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    doc.setTextColor(120);
+    doc.text(`ID: ${studentData.id}  |  CLASS: ${studentData.class}`, 20, 75);
+
+    // Timetable List
+    const studentSubjects = subjects.filter(sub => !sub.class || sub.class === 'All' || sub.class === studentData.class);
+    
+    const DAY_ORDER: Record<string, number> = {
+      'Monday': 1, 'Tuesday': 2, 'Wednesday': 3, 'Thursday': 4, 'Friday': 5, 'Saturday': 6, 'Sunday': 7
+    };
+    
+    const sortedSubjects = [...studentSubjects].sort((a, b) => {
+      const orderA = DAY_ORDER[a.day || 'Monday'] || 99;
+      const orderB = DAY_ORDER[b.day || 'Monday'] || 99;
+      return orderA - orderB;
+    });
+
+    const head = [['DAY', 'SUBJECT', 'TYPE', 'TIME LOT/SLOT', 'ROOM']];
+    const body = sortedSubjects.map(sub => [
+      (sub.day || 'Monday').toUpperCase(),
+      sub.name.toUpperCase(),
+      (sub.type || 'Theory').toUpperCase(),
+      sub.classTime || 'TBA',
+      sub.room || 'TBA'
+    ]);
+
+    autoTable(doc, {
+      startY: 90,
+      head: head,
+      body: body,
+      theme: 'grid',
+      headStyles: { fillColor: [20, 20, 20], textColor: [255, 255, 255], fontStyle: 'bold' },
+      styles: { fontSize: 10, cellPadding: 5 },
+      columnStyles: {
+        0: { fontStyle: 'bold', cellWidth: 50 },
+        1: { fontStyle: 'bold', cellWidth: 90 },
+        2: { cellWidth: 40 },
+        3: { cellWidth: 50 },
+        4: { cellWidth: 35 }
+      }
+    });
+
+    // Signatures / footer
+    const finalY = (doc as any).lastAutoTable?.finalY || 130;
+    doc.setDrawColor(200, 200, 200);
+    doc.line(200, finalY + 25, 270, finalY + 25);
+    doc.setFontSize(9);
+    doc.setTextColor(100);
+    doc.text('Authorized Signature', 235, finalY + 30, { align: 'center' });
+    doc.text('Principal / Registrar', 235, finalY + 35, { align: 'center' });
+
+    doc.setFontSize(8);
+    doc.setTextColor(150);
+    doc.text(`Verification ID: ${Math.random().toString(36).substring(2, 10).toUpperCase()}`, 14, 196);
+    doc.text(`© ${new Date().getFullYear()} Manshau Campus`, 283, 196, { align: 'right' });
+
+    doc.save(`TimeTable_${studentData.name.replace(/\s+/g, '_')}.pdf`);
   };
 
   const exportToPDF = (studentData?: CalculatedMarks) => {
@@ -1443,11 +1587,10 @@ export default function App() {
     }
 
     // Exam Schedule Table
-    const head = [['SUBJECT', 'DATE', 'TIME', 'ROOM']];
+    const head = [['SUBJECT', 'TIME', 'ROOM']];
     const studentSubjects = subjects.filter(sub => !sub.class || sub.class === 'All' || sub.class === student.class);
     const body = studentSubjects.map(sub => [
       sub.name,
-      sub.examDate || 'TBA',
       sub.examTime || 'TBA',
       sub.room || 'TBA'
     ]);
@@ -1618,7 +1761,7 @@ export default function App() {
                 <Bell size={24} className="animate-bounce" />
               </div>
               <div className="text-left">
-                <h3 className="text-xl md:text-2xl font-black text-gray-900 tracking-tight">Exam Notifications & Announcements</h3>
+                <h3 className="text-xl md:text-2xl font-black text-gray-900 tracking-tight">Notifications & Announcements</h3>
                 <p className="text-xs md:text-sm text-gray-400 font-semibold uppercase tracking-wider mt-0.5">Stay updated with latest schedules & releases</p>
               </div>
             </div>
@@ -2065,16 +2208,28 @@ export default function App() {
                     </span>
                   </button>
                 )}
+                <button
+                  onClick={() => setStudentPortalTab('timetable')}
+                  className={cn(
+                    "px-3 md:px-4 py-1.5 rounded-lg text-[10px] md:text-xs font-bold transition-all relative flex items-center gap-1",
+                    studentPortalTab === 'timetable' ? "text-black" : "text-gray-500 hover:text-gray-700"
+                  )}
+                >
+                  {studentPortalTab === 'timetable' && (
+                    <motion.div layoutId="tab-pill" className="absolute inset-0 bg-white rounded-lg shadow-sm" />
+                  )}
+                  <span className="relative z-10">Class Time Table</span>
+                </button>
               </div>
             </div>
             <motion.button
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
-              onClick={() => studentPortalTab === 'hall-ticket' ? generateHallTicket(currentStudent) : exportToPDF(currentStudent)}
+              onClick={() => studentPortalTab === 'hall-ticket' ? generateHallTicket(currentStudent) : studentPortalTab === 'timetable' ? exportTimeTable(currentStudent) : exportToPDF(currentStudent)}
               className="flex items-center justify-center gap-2 bg-white border border-gray-200 px-4 md:px-6 py-2.5 md:py-3 rounded-xl md:rounded-2xl font-semibold shadow-sm hover:bg-gray-50 transition-all text-sm"
             >
               <Download size={18} />
-              {studentPortalTab === 'hall-ticket' ? 'Hall Ticket' : 'Report'}
+              {studentPortalTab === 'hall-ticket' ? 'Hall Ticket' : studentPortalTab === 'timetable' ? 'Class Time Table' : 'Report'}
             </motion.button>
           </motion.div>
 
@@ -2519,7 +2674,6 @@ export default function App() {
                         <thead>
                           <tr className="border-b border-gray-100">
                             <th className="py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Subject</th>
-                            <th className="py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Date</th>
                             <th className="py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Time</th>
                             <th className="py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Room</th>
                           </tr>
@@ -2538,11 +2692,105 @@ export default function App() {
                               key={sub.id}
                             >
                               <td className="py-4 font-bold text-sm">{sub.name}</td>
-                              <td className="py-4 text-sm text-gray-600">{sub.examDate || 'TBA'}</td>
                               <td className="py-4 text-sm text-gray-600">{sub.examTime || 'TBA'}</td>
                               <td className="py-4 text-sm text-gray-600">{sub.room || 'TBA'}</td>
                             </motion.tr>
                           ))}
+                        </motion.tbody>
+                      </table>
+                    </div>
+                  </div>
+                </motion.div>
+              ) : studentPortalTab === 'timetable' ? (
+                <motion.div
+                  key="timetable"
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -20 }}
+                  className="space-y-6"
+                >
+                  <div className="bg-white p-6 md:p-8 rounded-[2rem] border border-gray-100 shadow-sm animate-in fade-in zoom-in duration-500">
+                    <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
+                      <h4 className="text-sm font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2">
+                        <Calendar size={16} />
+                        Class Time Table
+                      </h4>
+                      <p className="text-xs text-gray-500 bg-gray-50 px-3 py-1.5 rounded-xl font-medium border border-gray-150">
+                        Class: <span className="font-bold text-gray-800">{currentStudent.class}</span>
+                      </p>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse font-medium">
+                        <thead>
+                          <tr className="border-b border-gray-100">
+                            <th className="py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest animate-pulse">Day</th>
+                            <th className="py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Subject</th>
+                            <th className="py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Type</th>
+                            <th className="py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest animate-pulse">Time Slot</th>
+                            <th className="py-4 text-[10px] font-bold text-gray-400 uppercase tracking-widest text-right">Room No.</th>
+                          </tr>
+                        </thead>
+                        <motion.tbody 
+                          variants={{
+                            show: { transition: { staggerChildren: 0.05 } }
+                          }}
+                          initial="hidden"
+                          animate="show"
+                          className="divide-y divide-gray-50"
+                        >
+                          {(() => {
+                            const studentSubjects = subjects.filter(sub => !sub.class || sub.class === 'All' || sub.class === currentStudent.class);
+                            if (studentSubjects.length === 0) {
+                              return (
+                                <tr>
+                                  <td colSpan={5} className="py-8 text-center text-gray-400 text-xs font-bold leading-normal">
+                                    No class time tables scheduled for your class yet.
+                                  </td>
+                                </tr>
+                              );
+                            }
+                            
+                            const DAY_ORDER: Record<string, number> = {
+                              'Monday': 1, 'Tuesday': 2, 'Wednesday': 3, 'Thursday': 4, 'Friday': 5, 'Saturday': 6, 'Sunday': 7
+                            };
+                            
+                            const sortedSubjects = [...studentSubjects].sort((a, b) => {
+                              const orderA = DAY_ORDER[a.day || 'Monday'] || 99;
+                              const orderB = DAY_ORDER[b.day || 'Monday'] || 99;
+                              return orderA - orderB;
+                            });
+
+                            return sortedSubjects.map(sub => (
+                              <motion.tr 
+                                variants={{ hidden: { opacity: 0, y: 5 }, show: { opacity: 1, y: 0 } }}
+                                key={sub.id}
+                                className="group hover:bg-gray-50/50 transition-all font-medium"
+                              >
+                                <td className="py-4 font-bold text-sm text-gray-950 capitalize">{sub.day || 'Monday'}</td>
+                                <td className="py-3 font-bold text-sm text-gray-950">{sub.name}</td>
+                                <td className="py-4 text-xs font-bold">
+                                  <span className={cn(
+                                    "px-2.5 py-1 rounded-lg text-[10px] font-bold border capitalize",
+                                    sub.type === "Practical" 
+                                      ? "bg-purple-50 text-purple-700 border-purple-100"
+                                      : sub.type === "Internal"
+                                      ? "bg-amber-50 text-amber-700 border-amber-100"
+                                      : "bg-blue-50 text-blue-700 border-blue-100"
+                                  )}>
+                                    {sub.type || 'Theory'}
+                                  </span>
+                                </td>
+                                <td className="py-4 text-sm text-gray-600 flex items-center gap-1.5 font-bold">
+                                  <Clock size={13} className="text-gray-400" />
+                                  {sub.classTime || 'TBA'}
+                                </td>
+                                <td className="py-4 text-sm text-gray-900 font-bold text-right text-gray-650">
+                                  {sub.room ? `Room ${sub.room}` : 'TBA'}
+                                </td>
+                              </motion.tr>
+                            ));
+                          })()}
                         </motion.tbody>
                       </table>
                     </div>
@@ -2600,15 +2848,10 @@ export default function App() {
             </button>
             <div className="flex items-center gap-2 md:gap-3">
               <button
-                onClick={async () => {
-                  try {
-                    await logout();
-                    setIsAdminLoggedIn(false);
-                    setView('landing');
-                    toast.success("Logged out successfully");
-                  } catch (error) {
-                    toast.error("Logout failed");
-                  }
+                onClick={() => {
+                  setIsAdminLoggedIn(false);
+                  setView('landing');
+                  toast.success("Logged out successfully");
                 }}
                 className="p-2.5 md:p-3 bg-white border border-rose-100 rounded-xl md:rounded-2xl text-rose-500 hover:bg-rose-50 transition-all shadow-sm flex items-center gap-2"
                 title="Logout"
@@ -2645,6 +2888,7 @@ export default function App() {
               { id: 'results', label: 'Exam Results', icon: FileText },
               { id: 'students', label: 'Students', icon: Users },
               { id: 'subjects', label: 'Subjects', icon: BookOpen },
+              { id: 'timetable', label: 'Class Time Table', icon: Calendar },
               { id: 'hall-tickets', label: 'Hall Tickets', icon: Ticket },
               { id: 'notifications', label: 'Announcements', icon: Megaphone },
               { id: 'settings', label: 'Settings', icon: Settings },
@@ -3323,46 +3567,64 @@ export default function App() {
                       </select>
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-4 md:gap-6 mb-8">
-                    <div className="space-y-1.5">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 mb-8">
+                    <div className="space-y-1.5 col-span-1">
                       <label className="text-[10px] md:text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Max Marks</label>
                       <input
                         type="number"
-                        className="w-full bg-white border border-gray-100 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black transition-all shadow-sm"
+                        className="w-full bg-white border border-gray-100 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black transition-all shadow-sm font-bold"
                         value={newSubjectMax}
                         onChange={(e) => setNewSubjectMax(parseInt(e.target.value) || 0)}
                       />
                     </div>
-                    <div className="space-y-1.5">
+                    <div className="space-y-1.5 col-span-1">
                       <label className="text-[10px] md:text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Pass Marks</label>
                       <input
                         type="number"
-                        className="w-full bg-white border border-gray-100 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black transition-all shadow-sm"
+                        className="w-full bg-white border border-gray-100 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black transition-all shadow-sm font-bold"
                         value={newSubjectPass}
                         onChange={(e) => setNewSubjectPass(parseInt(e.target.value) || 0)}
                       />
                     </div>
+                    <div className="space-y-1.5 col-span-1">
+                      <label className="text-[10px] md:text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Subject Type</label>
+                      <select
+                        className="w-full bg-white border border-gray-100 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black focus:border-transparent transition-all shadow-sm font-bold appearance-none cursor-pointer"
+                        value={newSubjectType}
+                        onChange={(e) => setNewSubjectType(e.target.value)}
+                      >
+                        {subjectTypes.map(type => (
+                          <option key={type} value={type}>{type}</option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
+
                   <div className="grid grid-cols-2 gap-4 md:gap-6 mb-8">
                     <div className="space-y-1.5">
-                      <label className="text-[10px] md:text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Exam Date</label>
-                      <input
-                        type="date"
-                        className="w-full bg-white border border-gray-100 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black transition-all shadow-sm"
-                        value={newSubjectDate}
-                        onChange={(e) => setNewSubjectDate(e.target.value)}
-                      />
+                      <label className="text-[10px] md:text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Class Day</label>
+                      <select
+                        className="w-full bg-white border border-gray-100 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black focus:border-transparent transition-all shadow-sm font-bold appearance-none cursor-pointer"
+                        value={newSubjectDay}
+                        onChange={(e) => setNewSubjectDay(e.target.value)}
+                      >
+                        {FIXED_DAYS.map(day => (
+                          <option key={day} value={day}>{day}</option>
+                        ))}
+                      </select>
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] md:text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Exam Time</label>
+                      <label className="text-[10px] md:text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Class Time</label>
                       <input
-                        type="time"
-                        className="w-full bg-white border border-gray-100 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black transition-all shadow-sm"
+                        type="text"
+                        placeholder="e.g. 09:00 AM - 10:00 AM"
+                        className="w-full bg-white border border-gray-100 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black transition-all shadow-sm font-bold"
                         value={newSubjectTime}
                         onChange={(e) => setNewSubjectTime(e.target.value)}
                       />
                     </div>
                   </div>
+
                   <button
                     onClick={addSubject}
                     className="w-full bg-black text-white font-black py-4 rounded-2xl hover:bg-gray-900 active:scale-[0.98] transition-all shadow-xl shadow-black/20 flex items-center justify-center gap-3 text-sm md:text-base border border-black/10"
@@ -3413,7 +3675,7 @@ export default function App() {
                             <Trash2 size={16} />
                           </button>
                         </div>
-                        <div className="grid grid-cols-2 md:grid-cols-7 gap-3 bg-gray-50/50 p-3 rounded-xl border border-gray-100">
+                        <div className="grid grid-cols-2 md:grid-cols-8 gap-3 bg-gray-50/50 p-3 rounded-xl border border-gray-100">
                           <div className="flex flex-col col-span-2">
                             <span className="text-[8px] text-gray-400 uppercase font-black tracking-widest mb-1">Subject Name</span>
                             <input
@@ -3455,18 +3717,33 @@ export default function App() {
                             />
                           </div>
                           <div className="flex flex-col">
-                            <span className="text-[8px] text-gray-400 uppercase font-black tracking-widest mb-1">Date</span>
-                            <input
-                              type="date"
-                              className="bg-white border border-gray-100 rounded-lg px-3 py-1.5 text-xs focus:ring-2 focus:ring-black focus:border-transparent transition-all font-bold"
-                              value={sub.examDate || ''}
-                              onChange={(e) => updateSubject(sub.id, { examDate: e.target.value })}
-                            />
+                            <span className="text-[8px] text-gray-400 uppercase font-black tracking-widest mb-1">Type</span>
+                            <select
+                              className="bg-white border border-gray-100 rounded-lg px-3 py-1.5 text-xs focus:ring-2 focus:ring-black focus:border-transparent transition-all font-bold appearance-none cursor-pointer"
+                              value={sub.type || 'Theory'}
+                              onChange={(e) => updateSubject(sub.id, { type: e.target.value as any })}
+                            >
+                              {subjectTypes.map(type => (
+                                <option key={type} value={type}>{type}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="flex flex-col">
+                            <span className="text-[8px] text-gray-400 uppercase font-black tracking-widest mb-1">Day</span>
+                            <select
+                              className="bg-white border border-gray-100 rounded-lg px-3 py-1.5 text-xs focus:ring-2 focus:ring-black focus:border-transparent transition-all font-bold appearance-none cursor-pointer"
+                              value={sub.day || 'Monday'}
+                              onChange={(e) => updateSubject(sub.id, { day: e.target.value })}
+                            >
+                              {FIXED_DAYS.map(day => (
+                                <option key={day} value={day}>{day}</option>
+                              ))}
+                            </select>
                           </div>
                           <div className="flex flex-col">
                             <span className="text-[8px] text-gray-400 uppercase font-black tracking-widest mb-1">Time</span>
                             <input
-                              type="time"
+                              type="text"
                               className="bg-white border border-gray-100 rounded-lg px-3 py-1.5 text-xs focus:ring-2 focus:ring-black focus:border-transparent transition-all font-bold"
                               value={sub.examTime || ''}
                               onChange={(e) => updateSubject(sub.id, { examTime: e.target.value })}
@@ -3477,6 +3754,400 @@ export default function App() {
                     ))}
                   </div>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {adminTab === 'timetable' && (
+          <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-6">
+            <div className="bg-white p-6 md:p-10 rounded-[2.5rem] md:rounded-[3.5rem] shadow-xl shadow-black/5 border border-gray-100 animate-in fade-in zoom-in duration-700">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 mb-8 md:mb-10">
+                <div className="flex items-center gap-3">
+                  <div className="p-3 bg-black text-white rounded-2xl">
+                    <Calendar size={20} />
+                  </div>
+                  <div>
+                    <h2 className="text-xl md:text-2xl font-black tracking-tight">Class Time Table Management</h2>
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mt-1">Configure weekly lecture schedules and classrooms</p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => setShowAddTimeTableForm(!showAddTimeTableForm)}
+                    className="flex items-center gap-2 bg-black hover:bg-gray-900 text-white px-4 py-2.5 rounded-xl font-bold text-xs transition-all shadow-sm cursor-pointer"
+                  >
+                    <Plus size={14} />
+                    {showAddTimeTableForm ? "Hide Planner" : "Schedule New Lecture"}
+                  </motion.button>
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => window.print()}
+                    className="flex items-center gap-2 bg-gray-50 hover:bg-gray-100 border border-gray-200 px-4 py-2.5 rounded-xl font-bold text-xs"
+                  >
+                    <Download size={14} />
+                    Print / Save Master Schedule
+                  </motion.button>
+                </div>
+              </div>
+
+              {showAddTimeTableForm && (
+                <motion.div 
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="bg-gray-50/70 p-6 md:p-8 rounded-[2rem] border border-gray-200 shadow-inner mb-8 space-y-6"
+                >
+                  <div className="flex items-center justify-between border-b border-gray-200 pb-3">
+                    <h4 className="text-sm font-black text-gray-800 uppercase tracking-widest flex items-center gap-2">
+                      <PlusCircle size={16} className="text-black" />
+                      Add New Lecture / Class Schedule
+                    </h4>
+                    <span className="text-[10px] text-gray-400 font-bold uppercase">Weekly Timetable Planner</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {/* Subject field */}
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Subject Name</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Maths, Physics, etc."
+                        className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black focus:border-transparent transition-all shadow-sm font-bold"
+                        value={newSubjectName}
+                        onChange={(e) => setNewSubjectName(e.target.value)}
+                      />
+                      {/* Subject Name quick selection */}
+                      <span className="text-[9px] text-gray-400 font-bold uppercase ml-1 block mt-2">Quick-Pick Subject:</span>
+                      <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto pr-1">
+                        {Array.from(new Set([...subjects.map(s => s.name), 'Maths', 'Physics', 'Chemistry', 'Biology', 'English', 'Computer'])).slice(0, 8).map(name => (
+                          <button
+                            key={name}
+                            type="button"
+                            onClick={() => setNewSubjectName(name)}
+                            className={cn(
+                              "text-[9px] font-bold px-2.5 py-1 rounded-lg border transition-all cursor-pointer",
+                              newSubjectName === name
+                                ? "bg-black text-white border-black"
+                                : "bg-white text-gray-600 hover:bg-gray-50 border-gray-200"
+                            )}
+                          >
+                            {name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Class Selector & Day Selector */}
+                    <div className="space-y-4">
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Class Section</label>
+                        <select
+                          className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black focus:border-transparent transition-all shadow-sm font-bold appearance-none cursor-pointer"
+                          value={newSubjectClass}
+                          onChange={(e) => setNewSubjectClass(e.target.value)}
+                        >
+                          <option value="All">All Classes</option>
+                          {FIXED_CLASSES.map(cls => (
+                            <option key={cls} value={cls}>Class {cls}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Day of the Week</label>
+                        <select
+                          className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black focus:border-transparent transition-all shadow-sm font-bold appearance-none cursor-pointer"
+                          value={newSubjectDay}
+                          onChange={(e) => setNewSubjectDay(e.target.value)}
+                        >
+                          {FIXED_DAYS.map(day => (
+                            <option key={day} value={day}>{day}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Time option presets & customize */}
+                    <div className="space-y-2 lg:col-span-1 md:col-span-2">
+                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1 flex items-center gap-1">
+                        <Clock size={11} /> Class Time Slot
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 09:00 AM - 10:00 AM"
+                        className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black focus:border-transparent transition-all shadow-sm font-bold"
+                        value={newSubjectTime}
+                        onChange={(e) => setNewSubjectTime(e.target.value)}
+                      />
+                      
+                      {/* Time suggestions / chips */}
+                      <span className="text-[9px] text-gray-400 font-bold uppercase ml-1 block my-2">Quick-Select Class Timings:</span>
+                      <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                        {[
+                          "08:30 AM - 09:30 AM",
+                          "09:30 AM - 10:30 AM",
+                          "10:45 AM - 11:45 AM",
+                          "11:45 AM - 12:45 PM",
+                          "01:30 PM - 02:30 PM",
+                          "02:30 PM - 03:30 PM",
+                          "03:30 PM - 04:30 PM"
+                        ].map(tSlot => (
+                          <button
+                            key={tSlot}
+                            type="button"
+                            onClick={() => setNewSubjectTime(tSlot)}
+                            className={cn(
+                              "text-[9px] font-bold px-2.5 py-1 rounded-lg border transition-all whitespace-nowrap cursor-pointer",
+                              newSubjectTime === tSlot
+                                ? "bg-black text-white border-black"
+                                : "bg-white text-gray-600 hover:bg-gray-50 border-gray-200"
+                            )}
+                          >
+                            {tSlot}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Room, Max Marks, Passmarks, Type */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Room No.</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 101, Lab 1"
+                        className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black focus:border-transparent transition-all shadow-sm font-bold"
+                        value={newSubjectRoom}
+                        onChange={(e) => setNewSubjectRoom(e.target.value)}
+                      />
+                    </div>
+                    
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Lecture Type</label>
+                      <select
+                        className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black focus:border-transparent transition-all shadow-sm font-bold appearance-none cursor-pointer"
+                        value={newSubjectType}
+                        onChange={(e) => setNewSubjectType(e.target.value)}
+                      >
+                        {subjectTypes.map(type => (
+                          <option key={type} value={type}>{type}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Max Marks (Exc. Exams)</label>
+                      <input
+                        type="number"
+                        className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black focus:border-transparent transition-all shadow-sm font-bold"
+                        value={newSubjectMax}
+                        onChange={(e) => setNewSubjectMax(parseInt(e.target.value) || 0)}
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Pass Marks (Exc. Exams)</label>
+                      <input
+                        type="number"
+                        className="w-full bg-white border border-gray-200 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black focus:border-transparent transition-all shadow-sm font-bold"
+                        value={newSubjectPass}
+                        onChange={(e) => setNewSubjectPass(parseInt(e.target.value) || 0)}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Add action buttons */}
+                  <div className="flex md:justify-end gap-3 pt-4 border-t border-gray-200">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewSubjectName('');
+                        setNewSubjectTime('');
+                        setNewSubjectRoom('');
+                        setNewSubjectType('Theory');
+                        setNewSubjectClass('All');
+                        setNewSubjectDay('Monday');
+                        setShowAddTimeTableForm(false);
+                      }}
+                      className="px-6 py-3 border border-gray-200 bg-white font-bold text-gray-500 rounded-xl hover:bg-gray-50 hover:text-black transition-all cursor-pointer text-xs md:text-sm"
+                    >
+                      Reset / Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!newSubjectName.trim()) {
+                          toast.error("Subject name is required!");
+                          return;
+                        }
+                        if (!newSubjectTime.trim()) {
+                          toast.error("Class time slot is required!");
+                          return;
+                        }
+                        await addSubject();
+                        toast.success(`Successfully added ${newSubjectName} to the schedule!`);
+                        setShowAddTimeTableForm(false);
+                      }}
+                      className="bg-black text-white hover:bg-gray-900 font-extrabold px-8 py-3 rounded-xl transition-all shadow-md active:scale-95 flex items-center justify-center gap-2 text-xs md:text-sm cursor-pointer"
+                    >
+                      <PlusCircle size={15} />
+                      Add to Time Table
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Class Selector Filter */}
+              <div className="space-y-3 mb-8">
+                <label className="text-[10px] md:text-xs font-black text-gray-400 uppercase tracking-widest ml-1 flex items-center gap-1.5">
+                  <Sliders size={12} />
+                  Filter by Class Section
+                </label>
+                <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-hide">
+                  <button
+                    onClick={() => setAdminTimetableClassFilter('All')}
+                    className={cn(
+                      "px-4 py-2 rounded-xl text-xs font-bold transition-all border whitespace-nowrap",
+                      adminTimetableClassFilter === 'All'
+                        ? "bg-black text-white border-black shadow-sm"
+                        : "bg-white text-gray-500 hover:text-black border-gray-105"
+                    )}
+                  >
+                    All Classes & Sections
+                  </button>
+                  {FIXED_CLASSES.map(cls => (
+                    <button
+                      key={cls}
+                      onClick={() => setAdminTimetableClassFilter(cls)}
+                      className={cn(
+                        "px-4 py-2 rounded-xl text-xs font-bold transition-all border whitespace-nowrap",
+                        adminTimetableClassFilter === cls
+                          ? "bg-black text-white border-black shadow-sm"
+                          : "bg-white text-gray-500 hover:text-black border-gray-105"
+                      )}
+                    >
+                      Class {cls}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Grid of Days */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                {FIXED_DAYS.map(day => {
+                  const daySubjects = subjects.filter(sub => {
+                    const matchesDay = (sub.day || 'Monday') === day;
+                    const matchesClass = adminTimetableClassFilter === 'All' || !sub.class || sub.class === 'All' || sub.class === adminTimetableClassFilter;
+                    return matchesDay && matchesClass;
+                  });
+
+                  return (
+                    <div key={day} className="bg-gray-50/50 p-5 rounded-[2rem] border border-gray-100 flex flex-col min-h-[300px] hover:shadow-lg transition-all">
+                      <div className="flex items-center justify-between mb-4 pb-2 border-b border-gray-100">
+                        <span className="font-black text-xs uppercase tracking-widest text-gray-400">{day}</span>
+                        <span className="bg-black/5 text-black font-extrabold text-[10px] px-2.5 py-0.5 rounded-full">
+                          {daySubjects.length} {daySubjects.length === 1 ? 'class' : 'classes'}
+                        </span>
+                      </div>
+
+                      <div className="space-y-4 flex-1 overflow-y-auto max-h-[400px] pr-1 custom-scrollbar">
+                        {daySubjects.length === 0 ? (
+                          <div className="h-full flex flex-col items-center justify-center py-12 text-center my-auto">
+                            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">No Lectures Scheduled</p>
+                          </div>
+                        ) : (
+                          daySubjects.map(sub => (
+                            <div key={sub.id} className="bg-white p-4 rounded-2xl border border-gray-100 shadow-sm space-y-3 relative group hover:border-gray-200 transition-all">
+                              <div className="flex items-start justify-between gap-1">
+                                <div>
+                                  <h4 className="font-bold text-xs text-gray-950 leading-snug">{sub.name}</h4>
+                                  <span className={cn(
+                                    "inline-block text-[8px] font-black uppercase tracking-widest mt-1 px-1.5 py-0.5 rounded border",
+                                    !sub.class || sub.class === 'All'
+                                      ? "bg-gray-50 text-gray-400 border-gray-150"
+                                      : "bg-emerald-50 text-emerald-700 border-emerald-150"
+                                  )}>
+                                    Class: {sub.class || 'All'}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <span className={cn(
+                                    "text-[8px] font-black px-1.5 py-0.5 rounded capitalize border",
+                                    sub.type === 'Practical' 
+                                      ? 'bg-purple-50 text-purple-650 border-purple-100' 
+                                      : 'bg-blue-50 text-blue-650 border-blue-100'
+                                  )}>
+                                    {sub.type || 'Theory'}
+                                  </span>
+                                  <button
+                                    onClick={() => {
+                                      if (confirm(`Are you sure you want to delete ${sub.name} from the timetable?`)) {
+                                        removeSubject(sub.id);
+                                        toast.success(`${sub.name} classroom schedule deleted successfully.`);
+                                      }
+                                    }}
+                                    className="text-gray-400 hover:text-red-500 hover:bg-red-50 rounded p-1 transition-all"
+                                    title="Unschedule Lecture"
+                                  >
+                                    <Trash2 size={11} />
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-1 gap-2.5 pt-2 border-t border-gray-50">
+                                {/* Time slot edit */}
+                                <div className="flex flex-col">
+                                  <span className="text-[8px] text-gray-400 uppercase font-black tracking-widest mb-1 flex items-center gap-1.5">
+                                    <Clock size={10} /> Time Slot
+                                  </span>
+                                  <input
+                                    type="text"
+                                    placeholder="e.g. 09:00 AM - 10:00 AM"
+                                    className="bg-gray-50/50 hover:bg-gray-50 border border-gray-100 rounded-lg px-2.5 py-1.5 text-xs font-bold transition-all focus:ring-1 focus:ring-black focus:bg-white"
+                                    value={sub.classTime || ''}
+                                    onChange={(e) => updateSubject(sub.id, { classTime: e.target.value })}
+                                  />
+                                </div>
+
+                                {/* Room edit */}
+                                <div className="flex flex-col">
+                                  <span className="text-[8px] text-gray-400 uppercase font-black tracking-widest mb-1">Room No.</span>
+                                  <input
+                                    type="text"
+                                    placeholder="TBA"
+                                    className="bg-gray-50/50 hover:bg-gray-50 border border-gray-100 rounded-lg px-2.5 py-1.5 text-xs font-bold transition-all focus:ring-1 focus:ring-black focus:bg-white"
+                                    value={sub.room || ''}
+                                    onChange={(e) => updateSubject(sub.id, { room: e.target.value })}
+                                  />
+                                </div>
+
+                                {/* Day rescheduling */}
+                                <div className="flex flex-col">
+                                  <span className="text-[8px] text-gray-400 uppercase font-black tracking-widest mb-1">Reschedule Day</span>
+                                  <select
+                                    className="bg-gray-50/50 hover:bg-gray-50 border border-gray-100 rounded-lg px-2.5 py-1.5 text-xs font-bold cursor-pointer transition-all focus:ring-1 focus:ring-black focus:bg-white appearance-none"
+                                    value={sub.day || 'Monday'}
+                                    onChange={(e) => updateSubject(sub.id, { day: e.target.value })}
+                                  >
+                                    {FIXED_DAYS.map(d => (
+                                      <option key={d} value={d}>{d}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -3498,16 +4169,7 @@ export default function App() {
                       <span className="font-bold text-sm md:text-base text-black">{sub.name}</span>
                     </div>
                     
-                    <div className="grid grid-cols-3 gap-3">
-                      <div className="space-y-1">
-                        <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">Date</label>
-                        <input
-                          type="date"
-                          className="w-full bg-white border-none rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-black transition-all"
-                          value={sub.examDate || ''}
-                          onChange={(e) => updateSubject(sub.id, { examDate: e.target.value })}
-                        />
-                      </div>
+                    <div className="grid grid-cols-2 gap-3">
                       <div className="space-y-1">
                         <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">Time</label>
                         <input
@@ -3811,100 +4473,108 @@ export default function App() {
               </div>
               
               <div className="space-y-4 md:space-y-6">
-                {/* Database Engine Configuration */}
-                <div className="space-y-3 md:space-y-4 pb-6 border-b border-gray-100">
-                  <h3 className="text-[10px] md:text-sm font-bold text-gray-400 uppercase tracking-widest ml-1">Database Engine Provider</h3>
-                  <div className="grid grid-cols-2 gap-3">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDbProvider("firebase");
-                        localStorage.setItem("dbProvider", "firebase");
-                        toast.success("Switched database engine to Firebase Firestore!");
-                      }}
-                      className={`flex flex-col items-start p-4 rounded-xl border text-left transition-all ${
-                        dbProvider === "firebase"
-                          ? "border-black bg-black text-white"
-                          : "border-gray-200 bg-white hover:bg-gray-50 text-gray-800"
-                      }`}
-                    >
-                      <span className="font-bold text-xs md:text-sm mb-1 flex items-center gap-1.5">
-                        <span className={`w-2 h-2 rounded-full ${dbProvider === "firebase" ? "bg-emerald-400 animate-pulse" : "bg-gray-400"}`} />
-                        Cloud Firestore
-                      </span>
-                      <span className={`text-[9px] md:text-xs ${dbProvider === "firebase" ? "text-gray-300" : "text-gray-400"}`}>
-                        Default Firebase Database
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setDbProvider("mongodb");
-                        localStorage.setItem("dbProvider", "mongodb");
-                        toast.success("Switched database engine to MongoDB!");
-                      }}
-                      className={`flex flex-col items-start p-4 rounded-xl border text-left transition-all ${
-                        dbProvider === "mongodb"
-                          ? "border-black bg-black text-white"
-                          : "border-gray-200 bg-white hover:bg-gray-50 text-gray-800"
-                      }`}
-                    >
-                      <span className="font-bold text-xs md:text-sm mb-1 flex items-center gap-1.5">
-                        <span className={`w-2 h-2 rounded-full ${
-                          dbProvider === "mongodb" 
-                            ? (dbStatus?.isConnected ? "bg-emerald-400 animate-pulse" : "bg-amber-400 animate-pulse")
-                            : "bg-gray-400"
-                        }`} />
-                        MongoDB Atlas
-                      </span>
-                      <span className={`text-[9px] md:text-xs ${dbProvider === "mongodb" ? "text-gray-300" : "text-gray-400"}`}>
-                        {dbStatus?.isConnected ? "Connected successfully" : "Using in-memory sandbox"}
-                      </span>
-                    </button>
-                  </div>
-
-                  {dbProvider === "mongodb" && (
-                    <div className="bg-gray-50 rounded-xl p-3 md:p-4 text-[10px] md:text-xs space-y-2 border border-gray-100 animate-in fade-in slide-in-from-top-2 duration-300">
-                      <div className="flex items-center justify-between">
-                        <span className="font-mono text-gray-400 uppercase tracking-widest text-[8px] md:text-[9px]">Engine Status</span>
-                        {dbStatus?.isConnected ? (
-                          <span className="text-emerald-600 font-bold bg-emerald-50 px-2 py-0.5 rounded-full text-[8px] md:text-[10px] border border-emerald-100 flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                            Connected
-                          </span>
-                        ) : (
-                          <span className="text-amber-600 font-bold bg-amber-50 px-2 py-0.5 rounded-full text-[8px] md:text-[10px] border border-amber-100 flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-                            Sandbox Fallback Mode
-                          </span>
-                        )}
-                      </div>
-
-                      {dbStatus?.uri ? (
-                        <div className="space-y-1">
-                          <span className="text-gray-400">Connection URI:</span>
-                          <code className="block bg-white p-2 rounded border border-gray-100 select-all font-mono break-all text-[8px] md:text-[10px] text-gray-600">
-                            {dbStatus.uri}
-                          </code>
-                        </div>
+                {/* Supabase Connection Status and Setup */}
+                <div className="space-y-4 pb-6 border-b border-gray-100">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-[10px] md:text-sm font-bold text-gray-400 uppercase tracking-widest ml-1">Supabase Database Integration</h3>
+                    <div className="flex items-center gap-1.5">
+                      {supabaseStatus?.isConnected ? (
+                        <span className="text-emerald-700 font-bold bg-emerald-50 px-2.5 py-1 rounded-xl text-[10px] md:text-xs border border-emerald-200 flex items-center gap-1.5 shadow-sm">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                          Supabase Live
+                        </span>
                       ) : (
-                        <div className="text-amber-500 text-left space-y-1 leading-relaxed">
-                          <p className="font-bold text-[9px] md:text-xs">MongoDB URI is not configured.</p>
-                          <p className="text-[8px] md:text-[10px] text-gray-400">
-                            The engine is gracefully falling back to a persistent sandbox memory state to avoid system crashes. 
-                            To use real remote MongoDB Atlas, please configure the <code className="bg-gray-100 px-1 py-0.5 rounded">MONGODB_URI</code> environment variable in your AI Studio secrets panel!
-                          </p>
-                        </div>
-                      )}
-
-                      {dbStatus?.error && (
-                        <div className="bg-red-50 text-red-600 p-2.5 rounded-lg border border-red-100 text-[9px] md:text-[10px] leading-relaxed">
-                          <span className="font-bold">Connection Warning:</span> {dbStatus.error}
-                        </div>
+                        <span className="text-amber-700 font-bold bg-amber-50 px-2.5 py-1 rounded-xl text-[10px] md:text-xs border border-amber-200 flex items-center gap-1.5 shadow-sm">
+                          <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                          Local Fallback Active
+                        </span>
                       )}
                     </div>
-                  )}
+                  </div>
+
+                  <div className="bg-slate-50 text-slate-800 rounded-2xl p-4 md:p-6 border border-slate-100 space-y-4 shadow-sm">
+                    <div className="flex flex-col sm:flex-row sm:items-start gap-4">
+                      <div className="w-10 h-10 bg-slate-900 rounded-full flex items-center justify-center shrink-0 text-white shadow-md">
+                        <Database size={20} />
+                      </div>
+                      <div className="space-y-1 flex-1">
+                        <h4 className="font-bold text-xs md:text-sm text-slate-900">
+                          Supabase Project: <code className="bg-slate-200 px-1.5 py-0.5 rounded font-mono text-slate-800">manshau cambus</code>
+                        </h4>
+                        <p className="text-[10px] md:text-xs text-slate-600 leading-relaxed">
+                          Your entire student marksheet database is fully integrated with your Supabase Cloud cluster at <code className="bg-slate-200 px-1 py-0.5 rounded font-mono break-all">{SUPABASE_URL}</code>.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={isSyncing}
+                        onClick={() => syncFromSupabase(true)}
+                        className={cn(
+                          "px-3 py-2.5 bg-slate-950 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 hover:bg-slate-850 active:scale-95 transition-all shadow-sm cursor-pointer border border-slate-950",
+                          isSyncing && "opacity-50"
+                        )}
+                      >
+                        <RefreshCw size={14} className={isSyncing ? "animate-spin" : ""} />
+                        {isSyncing ? "Syncing..." : "Sync Now"}
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-[10px] font-mono">
+                      {[
+                        { label: 'students', ok: supabaseStatus?.tablesVerified.students },
+                        { label: 'subjects', ok: supabaseStatus?.tablesVerified.subjects },
+                        { label: 'attendance', ok: supabaseStatus?.tablesVerified.attendance },
+                        { label: 'notifications', ok: supabaseStatus?.tablesVerified.notifications },
+                        { label: 'settings', ok: supabaseStatus?.tablesVerified.settings },
+                      ].map((tbl) => (
+                        <div key={tbl.label} className={cn(
+                          "p-2 rounded-xl text-center border font-bold flex flex-col justify-center items-center gap-1 capitalize transition-all",
+                          tbl.ok 
+                            ? "bg-emerald-50/50 text-emerald-800 border-emerald-100" 
+                            : "bg-amber-50/50 text-amber-800 border-amber-100"
+                        )}>
+                          <span className="text-[8px] uppercase font-bold text-gray-400 leading-none">{tbl.label}</span>
+                          <span className="text-[10px] mt-0.5">{tbl.ok ? "🟢 Ready" : "🟡 Not Found"}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {!supabaseStatus?.isConnected && (
+                      <div className="bg-amber-50/80 text-amber-800 p-4 rounded-xl border border-amber-100 text-[10px] md:text-xs space-y-2 leading-relaxed">
+                        <div className="flex items-center gap-1.5 font-bold text-amber-950">
+                          <AlertTriangle size={15} />
+                          Supabase Schema Setup Needed
+                        </div>
+                        <p>
+                          Your Supabase project is set up, but the corresponding PostgreSQL database tables (<code className="font-mono bg-amber-100 px-1 py-0.5 rounded">students</code>, <code className="font-mono bg-amber-100 px-1 py-0.5 rounded">subjects</code>, etc.) do not exist yet or are empty.
+                        </p>
+                        <p className="font-bold">
+                          To complete setup, please copy wait-free table creation code below and run it in your Supabase SQL Editor. This will enable immediate, dual-directional cloud synchronization!
+                        </p>
+                      </div>
+                    )}
+
+                    <div className="border border-slate-200 rounded-xl overflow-hidden bg-slate-900 text-slate-100 text-[10px] md:text-xs">
+                      <div className="flex items-center justify-between px-4 py-2 bg-slate-950 border-b border-slate-800">
+                        <span className="font-mono text-slate-400 text-[9px] uppercase font-bold tracking-widest flex items-center gap-1">
+                          <Database size={11} /> PostgreSQL Database Schema Setup
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(SUPABASE_SQL_SETUP);
+                            toast.success("SQL Schema Setup copied to clipboard!");
+                          }}
+                          className="px-2 py-1 text-[10px] bg-slate-800 font-bold hover:bg-slate-700 active:scale-95 text-slate-300 rounded-md flex items-center gap-1 transition-all cursor-pointer border border-slate-700"
+                        >
+                          <Copy size={11} /> Copy SQL
+                        </button>
+                      </div>
+                      <pre className="p-4 overflow-x-auto max-h-48 font-mono text-[9px] md:text-[10px] bg-slate-950 text-slate-300 select-all leading-normal">
+                        {SUPABASE_SQL_SETUP}
+                      </pre>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="space-y-3 md:space-y-4">
@@ -3914,11 +4584,11 @@ export default function App() {
                       type="button"
                       onClick={async () => {
                         const DEFAULT_SUBJECTS: SubjectConfig[] = [
-                          { id: '1', name: 'English', maxMarks: 100, passMarks: 35 },
-                          { id: '2', name: 'Maths', maxMarks: 100, passMarks: 35 },
-                          { id: '3', name: 'Science', maxMarks: 100, passMarks: 35 },
-                          { id: '4', name: 'Social', maxMarks: 100, passMarks: 35 },
-                          { id: '5', name: 'Computer', maxMarks: 100, passMarks: 35 },
+                          { id: '1', name: 'English', maxMarks: 100, passMarks: 35, type: 'Theory', day: 'Monday', classTime: '09:00 AM - 10:00 AM', examTime: '09:00 AM', room: '101' },
+                          { id: '2', name: 'Maths', maxMarks: 100, passMarks: 35, type: 'Theory', day: 'Tuesday', classTime: '10:00 AM - 11:00 AM', examTime: '10:30 AM', room: '102' },
+                          { id: '3', name: 'Science', maxMarks: 100, passMarks: 35, type: 'Theory', day: 'Wednesday', classTime: '11:15 AM - 12:15 PM', examTime: '01:00 PM', room: '103' },
+                          { id: '4', name: 'Social', maxMarks: 100, passMarks: 35, type: 'Theory', day: 'Thursday', classTime: '12:15 PM - 01:15 PM', examTime: '02:30 PM', room: '104' },
+                          { id: '5', name: 'Computer', maxMarks: 100, passMarks: 35, type: 'Theory', day: 'Friday', classTime: '02:00 PM - 03:00 PM', examTime: '04:00 PM', room: 'Lab 1' },
                         ];
                         try {
                           for (const sub of DEFAULT_SUBJECTS) {
