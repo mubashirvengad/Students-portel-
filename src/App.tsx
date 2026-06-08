@@ -141,6 +141,8 @@ export default function App() {
   const [portalNotifFilter, setPortalNotifFilter] = useState<'all' | 'mine' | 'students' | 'parents'>('mine');
   const [adminTab, setAdminTab] = useState<'results' | 'students' | 'subjects' | 'settings' | 'hall-tickets' | 'notifications'>('results');
   const [attendanceSearch, setAttendanceSearch] = useState('');
+  const [showClearAllModal, setShowClearAllModal] = useState(false);
+  const [isClearingAll, setIsClearingAll] = useState(false);
   
   // Photo Adjustment state
   const [photoAdjustSrc, setPhotoAdjustSrc] = useState<string | null>(null);
@@ -689,6 +691,39 @@ export default function App() {
       } catch (error) {
         handleFirestoreError(error, OperationType.DELETE, path);
       }
+    }
+  };
+
+  const handleClearAllStudentData = async () => {
+    setIsClearingAll(true);
+    try {
+      const deleteStudentPromises = students.map((s) => {
+        const idToDelete = s.docId || s.id;
+        if (idToDelete) {
+          return dbDelete('students', idToDelete);
+        }
+        return Promise.resolve();
+      });
+
+      const deleteAttendancePromises = attendanceRecords.map((a) => {
+        if (a.id) {
+          return dbDelete('attendance', a.id);
+        }
+        return Promise.resolve();
+      });
+
+      await Promise.all([...deleteStudentPromises, ...deleteAttendancePromises]);
+
+      setStudents([]);
+      setAttendanceRecords([]);
+      
+      toast.success("All student records and attendance data have been removed.");
+      setShowClearAllModal(false);
+    } catch (error) {
+      console.error("Error clearing student data:", error);
+      toast.error("Failed to remove some student data or attendance records.");
+    } finally {
+      setIsClearingAll(false);
     }
   };
 
@@ -3874,29 +3909,40 @@ export default function App() {
 
                 <div className="space-y-3 md:space-y-4">
                   <h3 className="text-[10px] md:text-sm font-bold text-gray-400 uppercase tracking-widest ml-1">Data Maintenance</h3>
-                  <button
-                    onClick={async () => {
-                      const DEFAULT_SUBJECTS: SubjectConfig[] = [
-                        { id: '1', name: 'English', maxMarks: 100, passMarks: 35 },
-                        { id: '2', name: 'Maths', maxMarks: 100, passMarks: 35 },
-                        { id: '3', name: 'Science', maxMarks: 100, passMarks: 35 },
-                        { id: '4', name: 'Social', maxMarks: 100, passMarks: 35 },
-                        { id: '5', name: 'Computer', maxMarks: 100, passMarks: 35 },
-                      ];
-                      try {
-                        for (const sub of DEFAULT_SUBJECTS) {
-                          await dbSave('subjects', sub.id, sub);
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const DEFAULT_SUBJECTS: SubjectConfig[] = [
+                          { id: '1', name: 'English', maxMarks: 100, passMarks: 35 },
+                          { id: '2', name: 'Maths', maxMarks: 100, passMarks: 35 },
+                          { id: '3', name: 'Science', maxMarks: 100, passMarks: 35 },
+                          { id: '4', name: 'Social', maxMarks: 100, passMarks: 35 },
+                          { id: '5', name: 'Computer', maxMarks: 100, passMarks: 35 },
+                        ];
+                        try {
+                          for (const sub of DEFAULT_SUBJECTS) {
+                            await dbSave('subjects', sub.id, sub);
+                          }
+                          toast.success("Default subjects seeded successfully!");
+                        } catch (error) {
+                          handleFirestoreError(error, OperationType.WRITE, 'subjects');
                         }
-                        toast.success("Default subjects seeded successfully!");
-                      } catch (error) {
-                        handleFirestoreError(error, OperationType.WRITE, 'subjects');
-                      }
-                    }}
-                    className="w-full bg-white border border-gray-200 text-gray-600 font-bold py-2.5 md:py-3 rounded-xl hover:bg-gray-50 transition-all flex items-center justify-center gap-2 text-xs md:text-sm"
-                  >
-                    <Plus size={18} />
-                    Seed Default Subjects
-                  </button>
+                      }}
+                      className="w-full bg-white border border-gray-200 text-gray-600 font-bold py-2.5 md:py-3 rounded-xl hover:bg-gray-50 transition-all flex items-center justify-center gap-2 text-xs md:text-sm cursor-pointer"
+                    >
+                      <Plus size={18} />
+                      Seed Default Subjects
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowClearAllModal(true)}
+                      className="w-full bg-rose-50/50 border border-rose-200 hover:bg-rose-100/50 text-rose-600 font-bold py-2.5 md:py-3 rounded-xl transition-all flex items-center justify-center gap-2 text-xs md:text-sm cursor-pointer shadow-sm"
+                    >
+                      <Trash2 size={18} className="text-rose-500" />
+                      Remove All Students Data
+                    </button>
+                  </div>
                 </div>
 
                 <div className="space-y-3 md:space-y-4">
@@ -4651,6 +4697,43 @@ export default function App() {
           </div>
         );
       })()}
+
+      {/* Clear All Students Confirmation Modal */}
+      {showClearAllModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-[2.5rem] w-full max-w-sm p-8 shadow-2xl animate-in zoom-in-95 duration-200">
+            <div className="flex flex-col items-center text-center">
+              <div className="w-16 h-16 bg-rose-50 rounded-full flex items-center justify-center mb-6">
+                <AlertTriangle size={32} className="text-rose-500" />
+              </div>
+              <h3 className="text-xl md:text-2xl font-bold mb-2">
+                Remove All Student Data?
+              </h3>
+              <p className="text-gray-500 text-xs md:text-sm mb-6 leading-relaxed">
+                This is a highly destructive action. It will permanently delete ALL student profiles, results, and attendance records. This action cannot be undone.
+              </p>
+              <div className="flex gap-3 w-full">
+                <button
+                  type="button"
+                  onClick={() => setShowClearAllModal(false)}
+                  disabled={isClearingAll}
+                  className="flex-1 px-5 py-3.5 bg-gray-100 text-gray-600 font-bold rounded-xl hover:bg-gray-200 transition-all text-xs md:text-sm cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClearAllStudentData}
+                  disabled={isClearingAll}
+                  className="flex-1 px-5 py-3.5 bg-rose-500 text-white font-bold rounded-xl hover:bg-rose-600 transition-all shadow-lg shadow-rose-500/20 text-xs md:text-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                >
+                  {isClearingAll ? 'Removing...' : 'Yes, Delete All'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {photoAdjustSrc && onPhotoAdjustSave && (
         <PhotoAdjusterModal
