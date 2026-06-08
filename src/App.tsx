@@ -84,6 +84,9 @@ export default function App() {
   });
   const [newPasswordInput, setNewPasswordInput] = useState('');
   const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [resultsPublished, setResultsPublished] = useState<boolean>(() => {
+    return localStorage.getItem('resultsPublished') === 'true';
+  });
 
   const [subjects, setSubjects] = useState<SubjectConfig[]>(() => {
     const local = localStorage.getItem('subjects');
@@ -243,6 +246,10 @@ export default function App() {
                   setSubjectTypes(adminConf.subjectTypes);
                   localStorage.setItem('subjectTypes', JSON.stringify(adminConf.subjectTypes));
                 }
+                if (adminConf.resultsPublished !== undefined) {
+                  setResultsPublished(adminConf.resultsPublished === true || adminConf.resultsPublished === 'true');
+                  localStorage.setItem('resultsPublished', String(adminConf.resultsPublished));
+                }
               }
             } else {
               // Convert fields appropriately if needed
@@ -354,6 +361,10 @@ export default function App() {
           setSubjectTypes(data.subjectTypes);
           localStorage.setItem('subjectTypes', JSON.stringify(data.subjectTypes));
         }
+        if (data.resultsPublished !== undefined) {
+          setResultsPublished(data.resultsPublished === true || data.resultsPublished === 'true');
+          localStorage.setItem('resultsPublished', String(data.resultsPublished));
+        }
       }
 
       // 2. Perform optimistic/background write to Supabase
@@ -363,7 +374,8 @@ export default function App() {
           id: 'admin',
           adminPassword: data.adminPassword !== undefined ? data.adminPassword : adminPassword,
           examCenter: data.examCenter !== undefined ? data.examCenter : examCenter,
-          subjectTypes: data.subjectTypes !== undefined ? data.subjectTypes : subjectTypes
+          subjectTypes: data.subjectTypes !== undefined ? data.subjectTypes : subjectTypes,
+          resultsPublished: data.resultsPublished !== undefined ? (data.resultsPublished === true || data.resultsPublished === 'true') : resultsPublished
         };
       } else if (collectionName === 'students') {
         payload = {
@@ -1145,6 +1157,141 @@ export default function App() {
     setLoginId('');
     setLoginName('');
     setView('landing');
+  };
+
+  const generateClassTimetablePDF = (classCode: string, docToUse?: any) => {
+    const doc = docToUse || new jsPDF('landscape');
+    
+    // Draw header
+    doc.setFillColor(15, 23, 42); // slate-900 / navy slate
+    doc.rect(0, 0, 297, 45, 'F');
+    
+    doc.setDrawColor(255, 255, 255);
+    doc.setLineWidth(1);
+    doc.line(14, 10, 14, 35);
+    doc.line(14, 10, 25, 10);
+    doc.line(14, 22.5, 20, 22.5);
+    
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(26);
+    doc.text('MANSHAU', 30, 24);
+    
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    doc.setTextColor(180, 180, 180);
+    doc.text('CAMPUS ACADEMIC SYSTEM', 30, 32);
+    
+    doc.setFontSize(14);
+    doc.setTextColor(255, 255, 255);
+    doc.text('WEEKLY CLASS TIMETABLE', 283, 25, { align: 'right' });
+
+    // Section Info Ribbon
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(226, 232, 240);
+    doc.roundedRect(14, 55, 269, 25, 2, 2, 'FD');
+
+    doc.setTextColor(15, 23, 42);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.text(`CLASS SECTION: ${classCode.toUpperCase()}`, 20, 68);
+    
+    const classSubjects = subjects.filter(sub => sub.class === classCode || sub.class === 'All');
+    
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`TOTAL WEEKLY SESSIONS: ${classSubjects.length}  |  CAMPUS MAIN TIMETABLE REPORT`, 20, 75);
+
+    // Timetable List
+    const DAY_ORDER: Record<string, number> = {
+      'Monday': 1, 'Tuesday': 2, 'Wednesday': 3, 'Thursday': 4, 'Friday': 5, 'Saturday': 6, 'Sunday': 7
+    };
+    
+    const sortedSubjects = [...classSubjects].sort((a, b) => {
+      const orderA = DAY_ORDER[a.day || 'Monday'] || 99;
+      const orderB = DAY_ORDER[b.day || 'Monday'] || 99;
+      return orderA - orderB;
+    });
+
+    const head = [['DAY', 'SUBJECT', 'TYPE', 'TIME LOT/SLOT', 'ROOM']];
+    const body = sortedSubjects.map(sub => [
+      (sub.day || 'Monday').toUpperCase(),
+      sub.name.toUpperCase(),
+      (sub.type || 'Theory').toUpperCase(),
+      sub.classTime || 'TBA',
+      sub.room || 'TBA'
+    ]);
+
+    autoTable(doc, {
+      startY: 90,
+      head: head,
+      body: body,
+      theme: 'grid',
+      headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
+      styles: { fontSize: 10, cellPadding: 5 },
+      columnStyles: {
+        0: { fontStyle: 'bold', cellWidth: 50 },
+        1: { fontStyle: 'bold', cellWidth: 90 },
+        2: { cellWidth: 40 },
+        3: { cellWidth: 50 },
+        4: { cellWidth: 35 }
+      }
+    });
+
+    // Signatures / footer
+    const finalY = (doc as any).lastAutoTable?.finalY || 130;
+    doc.setDrawColor(200, 200, 200);
+    doc.line(200, finalY + 20, 270, finalY + 20);
+    doc.setFontSize(9);
+    doc.setTextColor(100);
+    doc.text('Authorized Signature', 235, finalY + 25, { align: 'center' });
+    doc.text('Academics Department', 235, finalY + 30, { align: 'center' });
+
+    doc.setFontSize(8);
+    doc.setTextColor(150);
+    doc.text(`Verification ID: ${Math.random().toString(36).substring(2, 10).toUpperCase()}`, 14, 196);
+    doc.text(`© ${new Date().getFullYear()} Manshau Campus`, 283, 196, { align: 'right' });
+
+    if (!docToUse) {
+      doc.save(`Class_Timetable_${classCode.replace(/\s+/g, '_')}.pdf`);
+    }
+  };
+
+  const bulkExportTimetables = (format: 'single' | 'individual' = 'single') => {
+    // Collect active classes from FIXED_CLASSES that have subjects
+    const activeClasses = FIXED_CLASSES.filter(cls => 
+      subjects.some(sub => sub.class === cls)
+    );
+
+    if (activeClasses.length === 0) {
+      toast.error("There are no lectures scheduled in the timetable to export.");
+      return;
+    }
+
+    const toastId = toast.loading(`Preparing timetable export for ${activeClasses.length} active classes...`);
+
+    try {
+      if (format === 'single') {
+        const doc = new jsPDF('landscape');
+        activeClasses.forEach((cls, idx) => {
+          if (idx > 0) {
+            doc.addPage();
+          }
+          generateClassTimetablePDF(cls, doc);
+        });
+        doc.save(`Consolidated_Class_Timetables_${new Date().toISOString().split('T')[0]}.pdf`);
+        toast.success(`Success! Generated 1 Consolidated PDF for ${activeClasses.length} classes.`, { id: toastId });
+      } else {
+        activeClasses.forEach(cls => {
+          generateClassTimetablePDF(cls);
+        });
+        toast.success(`Success! Downloading ${activeClasses.length} individual Class Timetable PDFs.`, { id: toastId });
+      }
+    } catch (err: any) {
+      console.error("Bulk export error:", err);
+      toast.error(`Failed to export: ${err.message || err}`, { id: toastId });
+    }
   };
 
   const exportTimeTable = (studentData: CalculatedMarks) => {
@@ -2262,25 +2409,36 @@ export default function App() {
                   <div className="flex flex-wrap justify-center md:justify-start gap-3 md:gap-4 mt-2">
                     <p className="text-gray-400 font-mono text-sm md:text-lg">ID: {currentStudent.id}</p>
                     <p className="text-gray-400 font-mono text-sm md:text-lg">Class: {currentStudent.class}</p>
-                    <p className="text-emerald-600 font-bold text-sm md:text-lg uppercase tracking-wider">{currentStudent.examType}</p>
+                    {resultsPublished ? (
+                      <p className="text-emerald-600 font-bold text-sm md:text-lg uppercase tracking-wider">{currentStudent.examType}</p>
+                    ) : (
+                      <p className="text-gray-450 font-bold text-sm md:text-lg uppercase tracking-wider text-gray-500">Results Pending</p>
+                    )}
                   </div>
                 </div>
               </div>
               <div className="flex flex-col items-center md:items-end gap-4">
                 <div className="text-center md:text-right">
                   <p className="text-gray-400 text-[10px] font-bold uppercase tracking-widest mb-1">Overall Result</p>
-                  <motion.div 
-                    initial={{ scale: 0.9, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    transition={{ delay: 0.3 }}
-                    className={cn(
-                      "inline-flex items-center gap-2 px-4 md:px-6 py-2 rounded-full text-sm md:text-lg font-bold",
-                      currentStudent.result === 'Pass' ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
-                    )}
-                  >
-                    {currentStudent.result === 'Pass' ? <CheckCircle2 size={20} /> : <XCircle size={20} />}
-                    {(currentStudent.result || '').toUpperCase()}
-                  </motion.div>
+                  {resultsPublished ? (
+                    <motion.div 
+                      initial={{ scale: 0.9, opacity: 0 }}
+                      animate={{ scale: 1, opacity: 1 }}
+                      transition={{ delay: 0.3 }}
+                      className={cn(
+                        "inline-flex items-center gap-2 px-4 md:px-6 py-2 rounded-full text-sm md:text-lg font-bold",
+                        currentStudent.result === 'Pass' ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+                      )}
+                    >
+                      {currentStudent.result === 'Pass' ? <CheckCircle2 size={20} /> : <XCircle size={20} />}
+                      {(currentStudent.result || '').toUpperCase()}
+                    </motion.div>
+                  ) : (
+                    <div className="text-xs text-amber-600 bg-amber-50 border border-amber-100 px-3 py-1.5 rounded-full font-bold inline-flex items-center gap-1.5">
+                      <Clock size={12} className="text-amber-500 animate-pulse" />
+                      Pending Publish
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -2315,7 +2473,7 @@ export default function App() {
                     <motion.div variants={{ hidden: { opacity: 0, y: 10 }, show: { opacity: 1, y: 0 } }} className="bg-black text-white p-4 md:p-6 rounded-[1.5rem] md:rounded-3xl flex items-center justify-between col-span-1 sm:col-span-2 md:col-span-1">
                       <div>
                         <p className="text-gray-400 text-[10px] md:text-xs font-bold uppercase tracking-widest mb-1 md:mb-2">Grade</p>
-                        <p className="text-3xl md:text-4xl font-bold">{currentStudent.grade}</p>
+                        <p className="text-2xl md:text-3xl font-bold">{resultsPublished ? currentStudent.grade : "Draft"}</p>
                       </div>
                       <Award size={32} className="text-emerald-400 opacity-50 md:w-12 md:h-12" />
                     </motion.div>
@@ -3542,7 +3700,7 @@ export default function App() {
                     <Plus size={14} className="text-black" />
                     Register New Subject
                   </h3>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 mb-6">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 mb-8">
                     <div className="space-y-1.5 focus-within:translate-x-1 transition-transform md:col-span-2">
                       <label className="text-[10px] md:text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Subject Name</label>
                       <input
@@ -3565,63 +3723,6 @@ export default function App() {
                           <option key={cls} value={cls}>Class {cls}</option>
                         ))}
                       </select>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6 mb-8">
-                    <div className="space-y-1.5 col-span-1">
-                      <label className="text-[10px] md:text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Max Marks</label>
-                      <input
-                        type="number"
-                        className="w-full bg-white border border-gray-100 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black transition-all shadow-sm font-bold"
-                        value={newSubjectMax}
-                        onChange={(e) => setNewSubjectMax(parseInt(e.target.value) || 0)}
-                      />
-                    </div>
-                    <div className="space-y-1.5 col-span-1">
-                      <label className="text-[10px] md:text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Pass Marks</label>
-                      <input
-                        type="number"
-                        className="w-full bg-white border border-gray-100 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black transition-all shadow-sm font-bold"
-                        value={newSubjectPass}
-                        onChange={(e) => setNewSubjectPass(parseInt(e.target.value) || 0)}
-                      />
-                    </div>
-                    <div className="space-y-1.5 col-span-1">
-                      <label className="text-[10px] md:text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Subject Type</label>
-                      <select
-                        className="w-full bg-white border border-gray-100 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black focus:border-transparent transition-all shadow-sm font-bold appearance-none cursor-pointer"
-                        value={newSubjectType}
-                        onChange={(e) => setNewSubjectType(e.target.value)}
-                      >
-                        {subjectTypes.map(type => (
-                          <option key={type} value={type}>{type}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4 md:gap-6 mb-8">
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] md:text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Class Day</label>
-                      <select
-                        className="w-full bg-white border border-gray-100 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black focus:border-transparent transition-all shadow-sm font-bold appearance-none cursor-pointer"
-                        value={newSubjectDay}
-                        onChange={(e) => setNewSubjectDay(e.target.value)}
-                      >
-                        {FIXED_DAYS.map(day => (
-                          <option key={day} value={day}>{day}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] md:text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Class Time</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. 09:00 AM - 10:00 AM"
-                        className="w-full bg-white border border-gray-100 rounded-xl px-4 py-3 text-xs md:text-sm focus:ring-2 focus:ring-black transition-all shadow-sm font-bold"
-                        value={newSubjectTime}
-                        onChange={(e) => setNewSubjectTime(e.target.value)}
-                      />
                     </div>
                   </div>
 
@@ -3786,11 +3887,31 @@ export default function App() {
                   <motion.button
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
+                    onClick={() => bulkExportTimetables('single')}
+                    className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs transition-all shadow-sm cursor-pointer"
+                    title="Export all timetables compiled into a single multi-page PDF"
+                  >
+                    <FileText size={14} />
+                    Bulk PDF (Single File)
+                  </motion.button>
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => bulkExportTimetables('individual')}
+                    className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs transition-all shadow-sm cursor-pointer"
+                    title="Export every class timetable as a separate PDF file"
+                  >
+                    <Download size={14} />
+                    Bulk PDF (Multiple Files)
+                  </motion.button>
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
                     onClick={() => window.print()}
                     className="flex items-center gap-2 bg-gray-50 hover:bg-gray-100 border border-gray-200 px-4 py-2.5 rounded-xl font-bold text-xs"
                   >
-                    <Download size={14} />
-                    Print / Save Master Schedule
+                    <Sliders size={14} />
+                    Print Master Grid
                   </motion.button>
                 </div>
               </div>
@@ -4169,7 +4290,7 @@ export default function App() {
                       <span className="font-bold text-sm md:text-base text-black">{sub.name}</span>
                     </div>
                     
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                       <div className="space-y-1">
                         <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">Time</label>
                         <input
@@ -4187,6 +4308,26 @@ export default function App() {
                           className="w-full bg-white border-none rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-black transition-all"
                           value={sub.room || ''}
                           onChange={(e) => updateSubject(sub.id, { room: e.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">Max Marks</label>
+                        <input
+                          type="number"
+                          placeholder="100"
+                          className="w-full bg-white border-none rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-black transition-all"
+                          value={sub.maxMarks || 0}
+                          onChange={(e) => updateSubject(sub.id, { maxMarks: parseInt(e.target.value) || 0 })}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-1">Pass Marks</label>
+                        <input
+                          type="number"
+                          placeholder="35"
+                          className="w-full bg-white border-none rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-black transition-all"
+                          value={sub.passMarks || 0}
+                          onChange={(e) => updateSubject(sub.id, { passMarks: parseInt(e.target.value) || 0 })}
                         />
                       </div>
                     </div>
@@ -4664,6 +4805,56 @@ export default function App() {
 
         {adminTab === 'results' && (
           <div className="space-y-6 md:space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            {/* Results Publication Controller */}
+            <div className="bg-white p-4 md:p-6 rounded-[1.5rem] md:rounded-[2rem] border border-gray-100 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm text-left">
+              <div className="flex items-center gap-3">
+                <div className={cn(
+                  "p-3 rounded-2xl transition-colors shrink-0",
+                  resultsPublished ? "bg-emerald-500 text-white" : "bg-amber-100 text-amber-700"
+                )}>
+                  {resultsPublished ? <CheckCircle2 size={24} /> : <AlertTriangle size={24} />}
+                </div>
+                <div className="text-left">
+                  <h3 className="font-bold text-sm md:text-base text-gray-900 flex items-center flex-wrap gap-2">
+                    Exam Results Publication Status
+                    <span className={cn(
+                      "text-[9px] px-2 py-0.5 rounded-full uppercase font-black tracking-wider border",
+                      resultsPublished 
+                        ? "bg-emerald-50 text-emerald-700 border-emerald-200" 
+                        : "bg-amber-50 text-amber-700 border-amber-200 animate-pulse"
+                    )}>
+                      {resultsPublished ? "Published" : "Draft (Hidden)"}
+                    </span>
+                  </h3>
+                  <p className="text-[10px] md:text-xs text-gray-500 font-medium leading-relaxed mt-0.5 max-w-xl">
+                    When set to Draft, students/parents can access resources, notices, and class schedules, but exam titles, pass status badges, and overall grades are hidden in report views.
+                  </p>
+                </div>
+              </div>
+              <div className="shrink-0 flex items-center gap-2 w-full md:w-auto">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const nextVal = !resultsPublished;
+                    await updateSettings({ resultsPublished: nextVal });
+                    if (nextVal) {
+                      toast.success("Exam Results successfully published to Student Portal!");
+                    } else {
+                      toast.success("Exam Results successfully set to Draft Mode.");
+                    }
+                  }}
+                  className={cn(
+                    "w-full md:w-auto px-4 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all border shadow-sm flex items-center justify-center gap-1.5 cursor-pointer",
+                    resultsPublished 
+                      ? "bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-200" 
+                      : "bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100"
+                  )}
+                >
+                  {resultsPublished ? "Switch to Draft Mode" : "Publish Exam Results Now"}
+                </button>
+              </div>
+            </div>
+
             {/* Subject Management Option Bar */}
             <div className="bg-white p-4 md:p-6 rounded-[1.5rem] md:rounded-[2rem] border border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
               <div className="flex items-center gap-3">

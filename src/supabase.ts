@@ -149,7 +149,8 @@ create table if not exists settings (
   "id" text primary key,
   "adminPassword" text default '1234',
   "examCenter" text default 'MANSHAU CAMPUS MAIN CENTER',
-  "subjectTypes" jsonb
+  "subjectTypes" jsonb,
+  "resultsPublished" boolean default false
 );
 
 alter table settings enable row level security;
